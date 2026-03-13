@@ -172,6 +172,19 @@ export async function processQueuedConversion({
       resultMessage: formatSuccessMessage(sourceFormat, targetFormat),
       status: "completed",
     });
+
+    if (conversion.userId !== null) {
+      try {
+        await storage.createUsageEvent({
+          eventType: "conversion",
+          fileSize: conversion.fileSize,
+          format: `${sourceFormat}->${targetFormat}`,
+          userId: conversion.userId,
+        });
+      } catch (usageError) {
+        console.error(`Failed to record usage for conversion ${conversionId}`, usageError);
+      }
+    }
   } catch (error) {
     await safeDeleteStoredFile(inputKey);
     await safeDeleteStoredFile(outputKey);

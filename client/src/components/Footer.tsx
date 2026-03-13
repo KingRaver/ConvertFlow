@@ -15,7 +15,7 @@ export default function Footer() {
               <span className="text-sm font-semibold">ConvertFlow</span>
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed max-w-[200px]">
-              Guest or account-backed file conversions with temporary output retention.
+              Guest or account-backed file conversions with plan-based quotas, upload limits, and retention windows.
             </p>
           </div>
 
@@ -49,7 +49,7 @@ export default function Footer() {
             <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Product</h4>
             <ul className="space-y-1.5">
               <li><Link href="/formats" className="text-xs text-muted-foreground hover:text-foreground transition-colors">All Formats</Link></li>
-              <li><Link href="/pricing" className="text-xs text-muted-foreground hover:text-foreground transition-colors">Current Access</Link></li>
+              <li><Link href="/pricing" className="text-xs text-muted-foreground hover:text-foreground transition-colors">Pricing &amp; Billing</Link></li>
               <li><Link href="/convert/pdf-to-word" className="text-xs text-muted-foreground hover:text-foreground transition-colors">Preset Example</Link></li>
             </ul>
           </div>

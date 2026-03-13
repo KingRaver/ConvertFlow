@@ -1,6 +1,7 @@
 import { ArrowLeftRight, Moon, Sun } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/context/AuthContext";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "./ThemeProvider";
 
@@ -50,7 +51,7 @@ export default function Header() {
               className="text-sm"
               data-testid="nav-pricing"
             >
-              Access
+              Pricing
             </Button>
           </Link>
           {isAuthenticated && (
@@ -70,9 +71,12 @@ export default function Header() {
         <div className="flex items-center gap-2">
           {isAuthenticated ? (
             <>
-              <span className="hidden text-xs text-muted-foreground md:inline-flex">
-                {user?.email}
-              </span>
+              <div className="hidden items-center gap-2 md:flex">
+                <span className="text-xs text-muted-foreground">{user?.email}</span>
+                <Badge variant="secondary" className="capitalize">
+                  {user?.plan ?? "free"}
+                </Badge>
+              </div>
               <Button
                 variant="outline"
                 size="sm"

@@ -169,3 +169,111 @@
 - Added `@aws-sdk/client-s3` and `@aws-sdk/s3-request-presigner`
 
 ---
+
+## Phase 5 — User Accounts and Auth
+
+### Auth schema (`shared/schema.ts`)
+- Added `users` table: `id`, `email`, `passwordHash`, `role` (`user|admin`), `createdAt`
+- Added `sessions` table: `id`, `userId` (FK → users, cascade delete), `token`, `expiresAt`, `createdAt`
+- Added `userId` (nullable FK → users, set null on delete) to `conversions` table; `visitorId` retained for unauthenticated users
+- Exported `USER_ROLES`, `UserRole`, `InsertUser`, `InsertSession`, `User`, `Session` types and insert schemas
+
+### Auth crypto (`server/auth.ts`)
+- Password hashing via Node `scrypt` with 16-byte random salt and 64-byte key; format: `scrypt:{salt}:{hash}` (both hex)
+- Password verification via `timingSafeEqual` to prevent timing attacks
+- Session tokens: 32 bytes of `crypto.randomFill` encoded as base64url
+- `createSessionExpiry()` returns `now + 30 days`; `normalizeEmail()` applies trim + toLowerCase before storage
+
+### Auth endpoints (`server/routes.ts`)
+- `POST /api/auth/register` — validates email + password (min 8 chars), rejects duplicate email with 409, creates user + session atomically, returns `{ token, user }`
+- `POST /api/auth/login` — verifies password with timing-safe comparison, returns `{ token, user }`; same 401 for unknown email vs wrong password (prevents account enumeration)
+- `POST /api/auth/logout` — deletes session by token; requires `requireAuth`
+- `GET /api/auth/me` — returns serialized user from validated session; requires `requireAuth`
+- Rate limiting: `createRateLimiter(10, 15 min)` applied to both register and login; limiter is scoped per-server instance so dev and test environments are isolated
+
+### Auth middleware (`server/middleware/auth.ts`)
+- `parseBearerToken` extracts token from `Authorization: Bearer <token>` header
+- `attachAuthenticatedUser` loads session → checks expiry (deletes expired session) → loads user → validates `role` value against `USER_ROLES` constant (deletes session if role is unrecognized) → attaches `req.user` and `req.authToken`
+- `optionalAuth` — attaches user if valid token present, otherwise continues unauthenticated
+- `requireAuth` — rejects with 401 if no valid session
+- Extends Express `Request` with `user?: RequestUser` and `authToken?: string`
+
+### Rate limiting middleware (`server/middleware/rateLimit.ts`)
+- `createRateLimiter(maxRequests, windowMs, message)` — sliding window, IP-keyed, per-server-instance
+- Automatically purges stale entries via `setInterval(...).unref()` to prevent unbounded memory growth
+- Respects `X-Forwarded-For` header for deployments behind a proxy
+- Returns 429 with `Retry-After` header when limit is exceeded
+
+### Conversion ownership (`server/routes.ts`)
+- `getUploadOwner`: authenticated users get `{ userId, visitorId? }`; anonymous requests require a valid visitor ID header
+- `getReadOwner`: authenticated users are scoped by `userId`; anonymous requests scoped by `visitorId`
+- `canAccessConversion`: user-owned jobs require matching `userId`; visitor-owned jobs require matching `visitorId`; the two scopes are mutually exclusive
+- `optionalAuth` applied to `POST /api/convert`, `GET /api/convert/:id`, `GET /api/download/:filename`, `GET /api/conversions`
+- `GET /api/conversions` supports pagination (`?page`, `?limit`) and filtering (`?status`, `?format`) for both scopes
+
+### Storage layer
+- Added `createUser`, `getUserByEmail`, `getUserById`, `createSession`, `getSessionByToken`, `deleteSessionByToken` to `IStorage` and both `MemStorage` and `DrizzleStorage`
+- Added `createUserWithSession(userData, sessionData)` to `IStorage`: atomically creates a user and its first session; `DrizzleStorage` wraps both inserts in a single Drizzle transaction; `MemStorage` performs two sequential operations
+- `DrizzleStorage` implements all auth methods against the `users` and `sessions` Drizzle tables
+
+### Frontend auth (`client/src/`)
+- `client/src/lib/auth.ts` — localStorage helpers: `getStoredAuthToken`, `setStoredAuthToken`, `clearStoredAuthToken`
+- `client/src/lib/api.ts` — `buildHeaders()` injects `Authorization: Bearer <token>` when a token is present; added `registerUser`, `loginUser`, `logoutUser`, `getCurrentUser` API functions
+- `client/src/context/AuthContext.tsx` — `AuthProvider` wraps the app; validates stored token on mount via `GET /api/auth/me`; exposes `user`, `isAuthenticated`, `isLoading`, `login`, `register`, `logout`
+- `client/src/pages/Login.tsx` — email + password form, redirects to `/history` if already authenticated, shows error on failure
+- `client/src/pages/Register.tsx` — same shape as Login; uses `autoComplete="new-password"`
+- `client/src/pages/History.tsx` — protected page; shows paginated, filterable conversion history for the authenticated user; supports re-download of completed jobs
+- `client/src/components/Header.tsx` — conditionally shows History link and logout button for authenticated users
+- `client/src/App.tsx` — `AuthProvider` added at root; `/login`, `/register`, `/history` routes wired
+
+### Dependency cleanup
+- Removed unused dependencies: `passport`, `passport-local`, `express-session`, `memorystore`, `connect-pg-simple`
+- Removed corresponding dev type packages: `@types/passport`, `@types/passport-local`, `@types/express-session`, `@types/connect-pg-simple`
+
+### Tests (`tests/serverRoutes.test.ts`)
+- `auth endpoints create, resolve, and revoke account sessions` — register → login → `/auth/me` → logout → `/auth/me` returns 401
+- `register rejects duplicate email with 409`
+- `register rejects missing or invalid fields with 400` — missing password, missing email, password too short, invalid email format
+- `login rejects wrong password with 401`
+- `login rejects unknown email with 401`
+- `authenticated routes reject missing or invalid tokens with 401` — no token, bad token, malformed Authorization scheme
+- `authenticated users can create account-owned jobs and query paginated filtered history` — upload two jobs, wait for completion, assert paginated + filtered history; assert anonymous access returns 404
+
+## Phase 6 — Metering, Limits, and Billing
+
+### Schema and storage
+- Added `plan`, `stripeCustomerId`, and `stripeSubscriptionId` to `users` in `shared/schema.ts`
+- Added `usage_events` table plus `InsertUsageEvent`, `UsageEvent`, `USER_PLANS`, and `USAGE_EVENT_TYPES` exports
+- Extended `IStorage`, `MemStorage`, and `DrizzleStorage` with `updateUser`, `createUsageEvent`, `countUsageEventsSince`, and `countVisitorConversionsSince`
+
+### Limits and metering
+- Added `server/limits.ts` with authoritative per-plan rules:
+  - `free`: 10 conversions/day, 10MB uploads, 1-hour retention
+  - `pro`: 500 conversions/day, 100MB uploads, 7-day retention
+  - `business`: unlimited conversions, 500MB uploads, 30-day retention
+- `POST /api/convert` now resolves the effective plan before Multer runs, rejects over-limit users with 429, and builds a per-request Multer instance so file-size caps are enforced dynamically instead of with a global 50MB ceiling
+- Conversion expiry is now derived from the uploader's plan at intake rather than a single fixed TTL
+- `processQueuedConversion` records a `conversion` usage event for successful account-owned jobs
+
+### Billing (`server/billing.ts`, `server/routes.ts`)
+- Installed `stripe` and added a Stripe-backed billing adapter with:
+  - `POST /api/billing/checkout` for paid-plan upgrades
+  - `POST /api/billing/portal` for Stripe customer portal access
+  - `POST /api/billing/webhook` to sync `customer.subscription.updated` / `customer.subscription.deleted` back onto the local user record
+- Checkout sessions attach `plan` and `userId` metadata to subscriptions so webhook sync can deterministically set the local `plan`
+- `.env.example` now includes `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`
+
+### Auth and client updates
+- Auth serialization now includes `plan`; `RequestUser`, `/api/auth/register`, `/api/auth/login`, and `/api/auth/me` all carry plan-aware state
+- `client/src/lib/api.ts` added `createBillingCheckout()` and `createBillingPortal()`
+- Replaced the old “Current Access” page with a live pricing/billing page that reflects real plan limits and launches Stripe checkout or portal flows
+- Header and footer now expose pricing/billing language and show the authenticated user’s current plan
+
+### Tests
+- Added `tests/billing.test.ts` for webhook-driven upgrade and downgrade sync
+- Added route coverage for:
+  - free-tier daily quota enforcement
+  - free-tier 10MB upload cap enforcement
+  - pro-tier retention windows and usage metering after successful conversion
+
+---

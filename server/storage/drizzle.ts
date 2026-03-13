@@ -1,20 +1,23 @@
-import { and, asc, desc, eq, isNotNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type {
   Conversion,
   InsertConversion,
   InsertSession,
   InsertUser,
+  InsertUsageEvent,
   Session,
   User,
+  UsageEvent,
+  UsageEventType,
 } from "@shared/schema";
-import { conversions, sessions, users } from "@shared/schema";
+import { conversions, sessions, usageEvents, users } from "@shared/schema";
 import { getDb } from "../db";
 import type { ConversionListOptions, IStorage, PaginatedConversions } from "../storage";
 
-function stripUndefined(updates: Partial<Conversion>) {
+function stripUndefined<T extends object>(updates: Partial<T>) {
   return Object.fromEntries(
     Object.entries(updates).filter(([, value]) => value !== undefined),
-  ) as Partial<Conversion>;
+  ) as Partial<T>;
 }
 
 function buildConversionFilters(options: ConversionListOptions) {
@@ -179,6 +182,21 @@ export class DrizzleStorage implements IStorage {
     return user;
   }
 
+  async updateUser(id: number, updates: Partial<User>): Promise<User | undefined> {
+    const sanitizedUpdates = stripUndefined(updates);
+    if (Object.keys(sanitizedUpdates).length === 0) {
+      return this.getUserById(id);
+    }
+
+    const [updated] = await this.db
+      .update(users)
+      .set(sanitizedUpdates)
+      .where(eq(users.id, id))
+      .returning();
+
+    return updated;
+  }
+
   async createSession(session: InsertSession): Promise<Session> {
     const [created] = await this.db.insert(sessions).values(session).returning();
     return created;
@@ -195,5 +213,45 @@ export class DrizzleStorage implements IStorage {
 
   async deleteSessionByToken(token: string): Promise<void> {
     await this.db.delete(sessions).where(eq(sessions.token, token));
+  }
+
+  async createUsageEvent(event: InsertUsageEvent): Promise<UsageEvent> {
+    const [created] = await this.db.insert(usageEvents).values(event).returning();
+    return created;
+  }
+
+  async countUsageEventsSince(
+    userId: number,
+    eventType: UsageEventType,
+    since: Date,
+  ): Promise<number> {
+    const [row] = await this.db
+      .select({ value: sql<number>`count(*)` })
+      .from(usageEvents)
+      .where(
+        and(
+          eq(usageEvents.userId, userId),
+          eq(usageEvents.eventType, eventType),
+          gte(usageEvents.createdAt, since),
+        ),
+      );
+
+    return Number(row?.value ?? 0);
+  }
+
+  async countVisitorConversionsSince(visitorId: string, since: Date): Promise<number> {
+    const [row] = await this.db
+      .select({ value: sql<number>`count(*)` })
+      .from(conversions)
+      .where(
+        and(
+          isNull(conversions.userId),
+          eq(conversions.visitorId, visitorId),
+          eq(conversions.status, "completed"),
+          gte(conversions.createdAt, since),
+        ),
+      );
+
+    return Number(row?.value ?? 0);
   }
 }

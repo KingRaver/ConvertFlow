@@ -4,8 +4,11 @@ import type {
   InsertConversion,
   InsertSession,
   InsertUser,
+  InsertUsageEvent,
   Session,
   User,
+  UsageEvent,
+  UsageEventType,
 } from "@shared/schema";
 import { hasDatabaseUrl } from "./db";
 import { DrizzleStorage } from "./storage/drizzle";
@@ -39,9 +42,13 @@ export interface IStorage {
   createUserWithSession(user: InsertUser, session: InsertSession): Promise<{ session: Session; user: User }>;
   getUserByEmail(email: string): Promise<User | undefined>;
   getUserById(id: number): Promise<User | undefined>;
+  updateUser(id: number, updates: Partial<User>): Promise<User | undefined>;
   createSession(session: InsertSession): Promise<Session>;
   getSessionByToken(token: string): Promise<Session | undefined>;
   deleteSessionByToken(token: string): Promise<void>;
+  createUsageEvent(event: InsertUsageEvent): Promise<UsageEvent>;
+  countUsageEventsSince(userId: number, eventType: UsageEventType, since: Date): Promise<number>;
+  countVisitorConversionsSince(visitorId: string, since: Date): Promise<number>;
 }
 
 function sortConversionsByNewest(left: Conversion, right: Conversion) {
@@ -58,16 +65,20 @@ export class MemStorage implements IStorage {
   private nextConversionId: number;
   private nextSessionId: number;
   private nextUserId: number;
+  private nextUsageEventId: number;
   private sessions: Map<number, Session>;
+  private usageEvents: Map<number, UsageEvent>;
   private users: Map<number, User>;
 
   constructor() {
     this.conversions = new Map();
     this.users = new Map();
     this.sessions = new Map();
+    this.usageEvents = new Map();
     this.nextConversionId = 1;
     this.nextUserId = 1;
     this.nextSessionId = 1;
+    this.nextUsageEventId = 1;
   }
 
   async createConversion(data: InsertConversion): Promise<Conversion> {
@@ -204,7 +215,10 @@ export class MemStorage implements IStorage {
       id,
       email: data.email,
       passwordHash: data.passwordHash,
+      plan: data.plan ?? "free",
       role: data.role ?? "user",
+      stripeCustomerId: data.stripeCustomerId ?? null,
+      stripeSubscriptionId: data.stripeSubscriptionId ?? null,
       createdAt: new Date(),
     };
 
@@ -218,6 +232,23 @@ export class MemStorage implements IStorage {
 
   async getUserById(id: number): Promise<User | undefined> {
     return this.users.get(id);
+  }
+
+  async updateUser(id: number, updates: Partial<User>): Promise<User | undefined> {
+    const existing = this.users.get(id);
+    if (!existing) {
+      return undefined;
+    }
+
+    const updated: User = {
+      ...existing,
+      ...Object.fromEntries(
+        Object.entries(updates).filter(([, value]) => value !== undefined),
+      ),
+    };
+
+    this.users.set(id, updated);
+    return updated;
   }
 
   async createSession(data: InsertSession): Promise<Session> {
@@ -245,6 +276,42 @@ export class MemStorage implements IStorage {
     }
 
     this.sessions.delete(existing[0]);
+  }
+
+  async createUsageEvent(data: InsertUsageEvent): Promise<UsageEvent> {
+    const id = this.nextUsageEventId++;
+    const event: UsageEvent = {
+      id,
+      userId: data.userId,
+      eventType: data.eventType,
+      format: data.format,
+      fileSize: data.fileSize,
+      createdAt: new Date(),
+    };
+
+    this.usageEvents.set(id, event);
+    return event;
+  }
+
+  async countUsageEventsSince(
+    userId: number,
+    eventType: UsageEventType,
+    since: Date,
+  ): Promise<number> {
+    return Array.from(this.usageEvents.values()).filter((event) => (
+      event.userId === userId &&
+      event.eventType === eventType &&
+      (event.createdAt?.getTime() ?? 0) >= since.getTime()
+    )).length;
+  }
+
+  async countVisitorConversionsSince(visitorId: string, since: Date): Promise<number> {
+    return Array.from(this.conversions.values()).filter((conversion) => (
+      conversion.userId === null &&
+      conversion.visitorId === visitorId &&
+      conversion.status === "completed" &&
+      (conversion.createdAt?.getTime() ?? 0) >= since.getTime()
+    )).length;
   }
 }
 

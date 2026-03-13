@@ -251,6 +251,114 @@ test("queued uploads return pending immediately before the worker settles them",
   await storage.deleteConversion(created.id);
 });
 
+test("free accounts are blocked after reaching the daily conversion limit", async (t) => {
+  const server = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  const account = await registerUser(server.baseUrl);
+
+  for (let index = 0; index < 10; index += 1) {
+    await storage.createUsageEvent({
+      eventType: "conversion",
+      fileSize: 1024,
+      format: "txt->docx",
+      userId: account.user.id,
+    });
+  }
+
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new File([Buffer.from("limit test\n")], "sample.txt", { type: "text/plain" }),
+  );
+  formData.append("targetFormat", "docx");
+
+  const response = await fetch(`${server.baseUrl}/api/convert`, {
+    method: "POST",
+    headers: createAuthHeader(account.token),
+    body: formData,
+  });
+
+  const json = await response.json() as { error: string };
+  assert.equal(response.status, 429);
+  assert.match(json.error, /10 conversions per UTC day/);
+});
+
+test("free accounts enforce the 10MB upload cap", async (t) => {
+  const server = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  const account = await registerUser(server.baseUrl);
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new File([Buffer.alloc(11 * 1024 * 1024, 1)], "oversized.txt", { type: "text/plain" }),
+  );
+  formData.append("targetFormat", "docx");
+
+  const response = await fetch(`${server.baseUrl}/api/convert`, {
+    method: "POST",
+    headers: createAuthHeader(account.token),
+    body: formData,
+  });
+
+  const json = await response.json() as { error: string };
+  assert.equal(response.status, 413);
+  assert.match(json.error, /10MB/);
+});
+
+test("pro accounts receive longer retention and usage metering on successful conversions", async (t) => {
+  const server = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  const account = await registerUser(server.baseUrl);
+  await storage.updateUser(account.user.id, {
+    plan: "pro",
+  });
+
+  const beforeUpload = Date.now();
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new File([Buffer.from("pro retention test\n")], "sample.txt", { type: "text/plain" }),
+  );
+  formData.append("targetFormat", "docx");
+
+  const response = await fetch(`${server.baseUrl}/api/convert`, {
+    method: "POST",
+    headers: createAuthHeader(account.token),
+    body: formData,
+  });
+
+  assert.equal(response.status, 201);
+  const created = await response.json() as {
+    expiresAt: string;
+    id: number;
+  };
+
+  const expiresAt = new Date(created.expiresAt).getTime();
+  const retentionMs = expiresAt - beforeUpload;
+  assert.ok(retentionMs >= 6.5 * 24 * 60 * 60 * 1000, "pro retention should be about 7 days");
+
+  const settled = await waitForSettledJob(server.baseUrl, createAuthHeader(account.token), created.id);
+  assert.equal(settled.status, "completed");
+  removeOutputFile(settled.outputFilename);
+  await storage.deleteConversion(created.id);
+
+  const usageCount = await storage.countUsageEventsSince(
+    account.user.id,
+    "conversion",
+    new Date(beforeUpload - 1_000),
+  );
+  assert.equal(usageCount, 1);
+});
+
 test("completed jobs expose a real visitor-scoped download", async (t) => {
   const server = await startServer();
   t.after(async () => {

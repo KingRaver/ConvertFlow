@@ -1,122 +1,250 @@
+import { useState } from "react";
+import { Check, CreditCard, Lock, Rocket, Shield } from "lucide-react";
 import { Link } from "wouter";
-import { Check, FolderTree, Route, Zap } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import type { UserPlan } from "@shared/schema";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/context/AuthContext";
+import { createBillingCheckout, createBillingPortal } from "@/lib/api";
 
-const CARDS = [
+type PaidPlan = Exclude<UserPlan, "free">;
+
+interface PricingCard {
+  cta: string;
+  description: string;
+  icon: typeof Lock;
+  limits: string[];
+  plan: UserPlan;
+  price: string;
+}
+
+const PLAN_ORDER: UserPlan[] = ["free", "pro", "business"];
+
+const CARDS: PricingCard[] = [
   {
-    name: "Current Build",
-    description: "What is live in this repository today",
-    icon: Zap,
-    badge: "Available now",
-    features: [
-      "Real converted downloads",
-      "Route-aware upload validation",
-      "Visitor-scoped job tracking",
-      "50MB upload cap",
-      "Automatic cleanup and expiry",
+    cta: "Start Free",
+    description: "Best for occasional conversions and evaluation.",
+    icon: Lock,
+    limits: [
+      "10 completed conversions per UTC day",
+      "10MB upload limit",
+      "1-hour file retention",
       "Guest uploads or account history",
     ],
-    cta: "Open Converter",
-    href: "/",
-    variant: "default" as const,
-    highlighted: true,
+    plan: "free",
+    price: "$0",
   },
   {
-    name: "Route Catalog",
-    description: "Review active format pairs and jump straight into a preset conversion page",
-    icon: FolderTree,
-    features: [
-      "Browse document, image, audio, video, and data routes",
-      "Inspect active source-to-target pairs",
-      "Share direct links without hash fragments",
-      "Validate preset page behavior",
+    cta: "Upgrade to Pro",
+    description: "Built for regular individual use with room to scale.",
+    icon: Rocket,
+    limits: [
+      "500 completed conversions per UTC day",
+      "100MB upload limit",
+      "7-day file retention",
+      "Stripe-managed subscription",
     ],
-    cta: "Browse Routes",
-    href: "/formats",
-    variant: "outline" as const,
-    highlighted: false,
+    plan: "pro",
+    price: "$19/mo",
   },
   {
-    name: "Preset Example",
-    description: "See a locked route page with source-format enforcement",
-    icon: Route,
-    features: [
-      "Deep-linkable preset page",
-      "Source extension locked to the route",
-      "Target format fixed by the slug",
-      "Job completion state with downloadable output",
+    cta: "Upgrade to Business",
+    description: "High-volume access with the largest upload ceiling.",
+    icon: Shield,
+    limits: [
+      "Unlimited completed conversions",
+      "500MB upload limit",
+      "30-day file retention",
+      "Priority billing management through Stripe",
     ],
-    cta: "View Example",
-    href: "/convert/pdf-to-word",
-    variant: "outline" as const,
-    highlighted: false,
+    plan: "business",
+    price: "$99/mo",
   },
 ];
 
+function getPlanRank(plan: UserPlan) {
+  return PLAN_ORDER.indexOf(plan);
+}
+
 export default function Pricing() {
+  const { isAuthenticated, user } = useAuth();
+  const [activeAction, setActiveAction] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const billingState = typeof window === "undefined"
+    ? null
+    : new URLSearchParams(window.location.search).get("billing");
+  const currentPlan = user?.plan ?? "free";
+
+  async function handleCheckout(plan: PaidPlan) {
+    setError(null);
+    setActiveAction(`checkout-${plan}`);
+
+    try {
+      const session = await createBillingCheckout(plan);
+      window.location.assign(session.url);
+    } catch (checkoutError) {
+      setError(checkoutError instanceof Error ? checkoutError.message : "Failed to start checkout.");
+      setActiveAction(null);
+    }
+  }
+
+  async function handlePortal() {
+    setError(null);
+    setActiveAction("portal");
+
+    try {
+      const session = await createBillingPortal();
+      window.location.assign(session.url);
+    } catch (portalError) {
+      setError(portalError instanceof Error ? portalError.message : "Failed to open billing portal.");
+      setActiveAction(null);
+    }
+  }
+
   return (
-    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16" data-testid="page-pricing">
-      <div className="text-center mb-12">
-        <h1 className="text-xl font-bold tracking-tight mb-2">Current Access</h1>
-        <p className="text-sm text-muted-foreground max-w-2xl mx-auto">
-          This page now reflects the current build truthfully. Paid tiers, API access, and production
-          conversion promises stay hidden until the implementation actually exists.
+    <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6 sm:py-16" data-testid="page-pricing">
+      <div className="mx-auto mb-12 max-w-3xl text-center">
+        <Badge variant="secondary" className="mb-4">
+          Billing and limits live
+        </Badge>
+        <h1 className="mb-3 text-2xl font-bold tracking-tight sm:text-3xl">Plans and billing</h1>
+        <p className="text-sm text-muted-foreground sm:text-base">
+          ConvertFlow now enforces plan-specific quotas, file size limits, retention windows, and Stripe-backed upgrades.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-5xl mx-auto">
-        {CARDS.map((card) => (
-          <div
-            key={card.name}
-            className={`relative p-6 rounded-xl border flex flex-col ${
-              card.highlighted
-                ? "border-primary bg-primary/[0.02] shadow-md"
-                : "border-border/60 bg-card"
-            }`}
-            data-testid={`pricing-${card.name.toLowerCase().replace(/\s/g, "-")}`}
-          >
-            {card.badge && (
-              <Badge className="absolute -top-2.5 left-1/2 -translate-x-1/2 text-[10px]">
-                {card.badge}
-              </Badge>
-            )}
+      {billingState === "success" && (
+        <div className="mx-auto mb-6 max-w-3xl rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-sm">
+          Billing checkout completed. Your plan will update after Stripe sends the subscription webhook.
+        </div>
+      )}
 
-            <div className="mb-4">
-              <div className="flex items-center gap-2 mb-2">
-                <card.icon className={`w-4 h-4 ${card.highlighted ? "text-primary" : "text-muted-foreground"}`} />
-                <span className="text-sm font-semibold">{card.name}</span>
-              </div>
-              <p className="text-xs text-muted-foreground">{card.description}</p>
-            </div>
+      {billingState === "canceled" && (
+        <div className="mx-auto mb-6 max-w-3xl rounded-lg border border-border/60 bg-card px-4 py-3 text-sm text-muted-foreground">
+          Checkout was canceled before any subscription change was applied.
+        </div>
+      )}
 
-            <ul className="space-y-2 mb-6 flex-1">
-              {card.features.map((feature) => (
-                <li key={feature} className="flex items-start gap-2 text-xs">
-                  <Check className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${card.highlighted ? "text-primary" : "text-muted-foreground"}`} />
-                  <span>{feature}</span>
-                </li>
-              ))}
-            </ul>
+      {error && (
+        <div className="mx-auto mb-6 max-w-3xl rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
-            <Link href={card.href}>
-              <Button
-                variant={card.variant}
-                className="w-full text-sm"
-                data-testid={`button-plan-${card.name.toLowerCase().replace(/\s/g, "-")}`}
-              >
-                {card.cta}
-              </Button>
-            </Link>
+      {isAuthenticated && (
+        <div className="mx-auto mb-8 flex max-w-3xl items-center justify-between rounded-xl border border-border/60 bg-card px-4 py-4">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+              Current plan
+            </p>
+            <p className="mt-1 text-lg font-semibold capitalize">{currentPlan}</p>
+            <p className="text-sm text-muted-foreground">{user?.email}</p>
           </div>
-        ))}
+          {currentPlan === "free" ? (
+            <Badge>Free tier</Badge>
+          ) : (
+            <Button
+              variant="outline"
+              onClick={() => void handlePortal()}
+              disabled={activeAction === "portal"}
+              data-testid="button-billing-manage"
+            >
+              <CreditCard className="mr-2 h-4 w-4" />
+              {activeAction === "portal" ? "Opening..." : "Manage billing"}
+            </Button>
+          )}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {CARDS.map((card) => {
+          const isCurrentPlan = currentPlan === card.plan;
+          const isUpgrade = getPlanRank(card.plan) > getPlanRank(currentPlan);
+          const upgradePlan = card.plan === "free" ? null : card.plan;
+          const actionKey = card.plan === "free" ? "free" : `checkout-${card.plan}`;
+
+          return (
+            <section
+              key={card.plan}
+              className={`rounded-2xl border p-6 ${
+                isCurrentPlan
+                  ? "border-primary bg-primary/[0.03] shadow-sm"
+                  : "border-border/60 bg-card"
+              }`}
+              data-testid={`pricing-${card.plan}`}
+            >
+              <div className="mb-6 flex items-start justify-between gap-4">
+                <div>
+                  <div className="mb-2 flex items-center gap-2">
+                    <card.icon className={`h-4 w-4 ${isCurrentPlan ? "text-primary" : "text-muted-foreground"}`} />
+                    <span className="text-sm font-semibold capitalize">{card.plan}</span>
+                    {isCurrentPlan && <Badge>Current</Badge>}
+                  </div>
+                  <p className="text-2xl font-bold tracking-tight">{card.price}</p>
+                  <p className="mt-2 text-sm text-muted-foreground">{card.description}</p>
+                </div>
+              </div>
+
+              <ul className="mb-6 space-y-3">
+                {card.limits.map((limit) => (
+                  <li key={limit} className="flex items-start gap-2 text-sm">
+                    <Check className={`mt-0.5 h-4 w-4 shrink-0 ${isCurrentPlan ? "text-primary" : "text-muted-foreground"}`} />
+                    <span>{limit}</span>
+                  </li>
+                ))}
+              </ul>
+
+              {!isAuthenticated ? (
+                <Link href={card.plan === "free" ? "/register" : "/login"}>
+                  <Button
+                    variant={card.plan === "free" ? "default" : "outline"}
+                    className="w-full"
+                    data-testid={`button-plan-${card.plan}`}
+                  >
+                    {card.plan === "free" ? "Create free account" : "Sign in to upgrade"}
+                  </Button>
+                </Link>
+              ) : isCurrentPlan ? (
+                <Button
+                  variant={card.plan === "free" ? "secondary" : "outline"}
+                  className="w-full"
+                  disabled={card.plan === "free" || activeAction === "portal"}
+                  onClick={card.plan === "free" ? undefined : () => void handlePortal()}
+                  data-testid={`button-plan-${card.plan}`}
+                >
+                  {card.plan === "free"
+                    ? "Current plan"
+                    : activeAction === "portal"
+                      ? "Opening..."
+                      : "Manage billing"}
+                </Button>
+              ) : isUpgrade && upgradePlan ? (
+                <Button
+                  className="w-full"
+                  disabled={activeAction === actionKey}
+                  onClick={() => void handleCheckout(upgradePlan)}
+                  data-testid={`button-plan-${card.plan}`}
+                >
+                  {activeAction === actionKey ? "Redirecting..." : card.cta}
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  disabled={activeAction === "portal"}
+                  onClick={() => void handlePortal()}
+                  data-testid={`button-plan-${card.plan}`}
+                >
+                  {activeAction === "portal" ? "Opening..." : "Manage in portal"}
+                </Button>
+              )}
+            </section>
+          );
+        })}
       </div>
 
-      <div className="mt-12 text-center">
-        <p className="text-xs text-muted-foreground max-w-2xl mx-auto">
-          When real conversion engines, billing, quotas, or an external API ship, this page should evolve
-          again. Until then, it is intentionally an access and rollout summary rather than a sales page.
-        </p>
+      <div className="mx-auto mt-10 max-w-3xl rounded-xl border border-border/60 bg-card px-4 py-4 text-sm text-muted-foreground">
+        Daily usage resets at 00:00 UTC. Successful account-owned conversions are metered for plan quotas, while guest uploads stay on the free tier.
       </div>
     </div>
   );

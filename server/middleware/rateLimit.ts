@@ -6,7 +6,8 @@ interface RateLimitEntry {
 }
 
 /**
- * Creates a sliding-window rate limiter keyed by IP address.
+ * Creates a fixed-window rate limiter keyed by IP address.
+ * State is held in-process — limits are not shared across multiple server instances.
  *
  * @param maxRequests  Maximum allowed requests within the window.
  * @param windowMs     Window duration in milliseconds.
@@ -18,7 +19,7 @@ export function createRateLimiter(maxRequests: number, windowMs: number, message
   // Purge stale entries periodically to prevent unbounded memory growth.
   const purgeInterval = setInterval(() => {
     const cutoff = Date.now() - windowMs;
-    for (const [key, entry] of store.entries()) {
+    for (const [key, entry] of Array.from(store.entries())) {
       if (entry.windowStart < cutoff) {
         store.delete(key);
       }

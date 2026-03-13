@@ -10,6 +10,7 @@ import {
   type ConversionStatus,
   SUPPORTED_CONVERSIONS,
   SUPPORTED_FORMATS,
+  type UserPlan,
 } from "@shared/schema";
 import { VISITOR_ID_HEADER, isValidVisitorId } from "@shared/visitor";
 import {
@@ -22,7 +23,6 @@ import {
 } from "./auth";
 import { expireConversionRecord, formatQueuedMessage } from "./conversion-jobs";
 import {
-  FILE_TTL_MS,
   UPLOAD_TMP_DIR,
   ensureWorkingDirectories,
   safeUnlink,
@@ -33,7 +33,23 @@ import {
   getOutputObjectKey,
   getUploadObjectKey,
 } from "./filestore";
+import {
+  createBillingCheckoutSession,
+  createBillingPortalSession,
+  constructStripeWebhookEvent,
+  isBillingConfigured,
+  syncStripeBillingEvent,
+} from "./billing";
 import { getLocalPathFromDownloadKey, parseLocalDownloadParams } from "./filestore/local";
+import {
+  getDailyUsageExceededMessage,
+  getEffectivePlan,
+  getFileSizeExceededMessage,
+  getPlanLimits,
+  getPlanRank,
+  getPlanRetentionDeadline,
+  getStartOfCurrentUtcDay,
+} from "./limits";
 import { optionalAuth, requireAuth } from "./middleware/auth";
 import { createRateLimiter } from "./middleware/rateLimit";
 import {
@@ -64,9 +80,23 @@ const historyQuerySchema = z.object({
   status: z.enum(CONVERSION_STATUSES).optional(),
 });
 
+const BILLING_CHECKOUT_PLANS = ["pro", "business"] as const;
+const billingCheckoutSchema = z.object({
+  plan: z.enum(BILLING_CHECKOUT_PLANS),
+});
+
 type ConversionOwner =
   | { scope: "user"; userId: number }
   | { scope: "visitor"; visitorId: string };
+
+class HttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 function getFirstValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -98,11 +128,13 @@ function serializeUser(user: {
   createdAt: Date | null;
   email: string;
   id: number;
+  plan: string;
   role: string;
 }) {
   return {
     id: user.id,
     email: user.email,
+    plan: user.plan,
     role: user.role,
     createdAt: user.createdAt?.toISOString() ?? null,
   };
@@ -175,26 +207,68 @@ function canAccessConversion(conversion: Conversion, owner: ConversionOwner) {
 
 ensureWorkingDirectories();
 
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: UPLOAD_TMP_DIR,
-    filename: (_req, file, cb) => {
-      const uniqueName = `${uuidv4()}${path.extname(file.originalname)}`;
-      cb(null, uniqueName);
+function createUploadMiddleware(maxFileSizeBytes: number) {
+  return multer({
+    storage: multer.diskStorage({
+      destination: UPLOAD_TMP_DIR,
+      filename: (_req, file, cb) => {
+        const uniqueName = `${uuidv4()}${path.extname(file.originalname)}`;
+        cb(null, uniqueName);
+      },
+    }),
+    limits: { fileSize: maxFileSizeBytes },
+    fileFilter: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).slice(1).toLowerCase();
+
+      if (SUPPORTED_CONVERSIONS[ext]) {
+        cb(null, true);
+        return;
+      }
+
+      cb(new Error(`Unsupported file format: .${ext}`));
     },
-  }),
-  limits: { fileSize: 50 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).slice(1).toLowerCase();
+  });
+}
 
-    if (SUPPORTED_CONVERSIONS[ext]) {
-      cb(null, true);
-      return;
-    }
+async function parseUploadedFile(
+  req: Request,
+  res: Response,
+  plan: UserPlan,
+) {
+  const upload = createUploadMiddleware(getPlanLimits(plan).maxFileSizeBytes).single("file");
 
-    cb(new Error(`Unsupported file format: .${ext}`));
-  },
-});
+  return new Promise<Express.Multer.File>((resolve, reject) => {
+    upload(req, res, (error) => {
+      if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+        reject(new HttpError(413, getFileSizeExceededMessage(plan)));
+        return;
+      }
+
+      if (error) {
+        reject(error instanceof Error ? new HttpError(400, error.message) : error);
+        return;
+      }
+
+      if (!req.file) {
+        reject(new HttpError(400, "No file uploaded."));
+        return;
+      }
+
+      resolve(req.file);
+    });
+  });
+}
+
+function getRequestBaseUrl(req: Request) {
+  const protocol = getFirstValue(req.header("x-forwarded-proto")) ?? req.protocol;
+  const host = getFirstValue(req.header("x-forwarded-host")) ?? req.header("host");
+
+  if (!host) {
+    throw new HttpError(400, "Unable to determine the request host.");
+  }
+
+  return `${protocol}://${host}`;
+}
 
 export async function registerRoutes(httpServer: Server, app: Express) {
   const authRateLimit = createRateLimiter(
@@ -226,7 +300,14 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
     const passwordHash = await hashPassword(parsed.data.password);
     const { user, session } = await storage.createUserWithSession(
-      { email: parsed.data.email, passwordHash, role: "user" },
+      {
+        email: parsed.data.email,
+        passwordHash,
+        plan: "free",
+        role: "user",
+        stripeCustomerId: null,
+        stripeSubscriptionId: null,
+      },
       { userId: 0, token: createSessionToken(), expiresAt: createSessionExpiry() },
     );
 
@@ -271,21 +352,129 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     return res.json(serializeUser(req.user!));
   });
 
-  app.post("/api/convert", optionalAuth, upload.single("file"), async (req: Request, res: Response) => {
+  app.post("/api/billing/checkout", requireAuth, async (req: Request, res: Response) => {
+    if (!isBillingConfigured()) {
+      return res.status(503).json({ error: "Stripe billing is not configured." });
+    }
+
+    const parsed = billingCheckoutSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: getValidationMessage(parsed.error) });
+    }
+
+    const user = await storage.getUserById(req.user!.id);
+    if (!user) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+
+    const requestedPlan = parsed.data.plan;
+    const currentPlan = req.user!.plan;
+    if (requestedPlan === currentPlan) {
+      return res.status(409).json({ error: `Your account is already on the ${requestedPlan} plan.` });
+    }
+
+    if (getPlanRank(requestedPlan) <= getPlanRank(currentPlan)) {
+      return res.status(400).json({ error: "Use the billing portal to change or cancel your current plan." });
+    }
+
+    try {
+      const session = await createBillingCheckoutSession({
+        baseUrl: getRequestBaseUrl(req),
+        plan: requestedPlan,
+        user,
+      });
+
+      if (session.customerId !== user.stripeCustomerId) {
+        await storage.updateUser(user.id, {
+          stripeCustomerId: session.customerId,
+        });
+      }
+
+      return res.json(session);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create Stripe checkout session.";
+      return res.status(502).json({ error: message });
+    }
+  });
+
+  app.post("/api/billing/portal", requireAuth, async (req: Request, res: Response) => {
+    if (!isBillingConfigured()) {
+      return res.status(503).json({ error: "Stripe billing is not configured." });
+    }
+
+    const user = await storage.getUserById(req.user!.id);
+    if (!user) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+
+    if (!user.stripeCustomerId) {
+      return res.status(400).json({ error: "No billing profile exists for this account yet." });
+    }
+
+    try {
+      const session = await createBillingPortalSession({
+        baseUrl: getRequestBaseUrl(req),
+        user,
+      });
+
+      return res.json(session);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create Stripe billing portal session.";
+      return res.status(502).json({ error: message });
+    }
+  });
+
+  app.post("/api/billing/webhook", async (req: Request, res: Response) => {
+    if (!isBillingConfigured()) {
+      return res.status(503).json({ error: "Stripe billing is not configured." });
+    }
+
+    const signature = getFirstValue(req.header("stripe-signature"));
+    if (!signature) {
+      return res.status(400).json({ error: "Stripe signature header is required." });
+    }
+
+    if (!Buffer.isBuffer(req.rawBody)) {
+      return res.status(400).json({ error: "Stripe webhook requires a raw request body." });
+    }
+
+    try {
+      const event = constructStripeWebhookEvent(req.rawBody, signature);
+      await syncStripeBillingEvent(event);
+      return res.json({ received: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid Stripe webhook payload.";
+      return res.status(400).json({ error: message });
+    }
+  });
+
+  app.post("/api/convert", optionalAuth, async (req: Request, res: Response) => {
     const owner = getUploadOwner(req, res);
     if (!owner) {
       safeUnlink(req.file?.path);
       return;
     }
 
+    const plan = getEffectivePlan(req.user?.plan);
+    const planLimits = getPlanLimits(plan);
+    const usageWindowStart = getStartOfCurrentUtcDay();
+
     let conversion: Conversion | null = null;
     let inputKey: string | null = null;
+    let file: Express.Multer.File | null = null;
 
     try {
-      const file = req.file;
-      if (!file) {
-        return res.status(400).json({ error: "No file uploaded." });
+      if (planLimits.conversionsPerDay !== null) {
+        const usageCount = owner.userId !== null
+          ? await storage.countUsageEventsSince(owner.userId, "conversion", usageWindowStart)
+          : await storage.countVisitorConversionsSince(owner.visitorId!, usageWindowStart);
+
+        if (usageCount >= planLimits.conversionsPerDay) {
+          return res.status(429).json({ error: getDailyUsageExceededMessage(plan) });
+        }
       }
+
+      file = await parseUploadedFile(req, res, plan);
 
       const targetFormat = getFirstValue(req.body.targetFormat)?.toLowerCase();
       if (!targetFormat) {
@@ -302,7 +491,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         });
       }
 
-      const expiresAt = new Date(Date.now() + FILE_TTL_MS);
+      const expiresAt = getPlanRetentionDeadline(plan);
       inputKey = getUploadObjectKey(file.filename);
       await filestore.save(file.path, inputKey);
       safeUnlink(file.path);
@@ -332,7 +521,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       return res.status(201).json(serializeConversion(conversion));
     } catch (err: unknown) {
-      safeUnlink(req.file?.path);
+      safeUnlink(file?.path ?? req.file?.path);
       if (inputKey) {
         try {
           await filestore.delete(inputKey);
@@ -342,6 +531,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
       if (conversion) {
         await storage.deleteConversion(conversion.id);
+      }
+      if (err instanceof HttpError) {
+        return res.status(err.status).json({ error: err.message });
       }
       const error = err as Error;
       return res.status(500).json({ error: error.message || "Conversion failed." });
@@ -464,7 +656,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (err instanceof multer.MulterError) {
       if (err.code === "LIMIT_FILE_SIZE") {
-        return res.status(413).json({ error: "File too large. Maximum size is 50MB." });
+        return res.status(413).json({ error: "File too large for the current plan." });
       }
 
       return res.status(400).json({ error: err.message });

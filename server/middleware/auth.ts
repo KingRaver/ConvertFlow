@@ -1,11 +1,12 @@
 import type { NextFunction, Request, Response } from "express";
-import { USER_ROLES, type UserRole } from "@shared/schema";
+import { USER_PLANS, USER_ROLES, type UserPlan, type UserRole } from "@shared/schema";
 import { storage } from "../storage";
 
 export interface RequestUser {
   createdAt: Date | null;
   email: string;
   id: number;
+  plan: UserPlan;
   role: UserRole;
 }
 
@@ -59,11 +60,17 @@ async function attachAuthenticatedUser(req: Request) {
     return null;
   }
 
+  if (!(USER_PLANS as readonly string[]).includes(user.plan)) {
+    await storage.deleteSessionByToken(token);
+    return null;
+  }
+
   req.authToken = token;
   req.user = {
     createdAt: user.createdAt ?? null,
     email: user.email,
     id: user.id,
+    plan: user.plan as UserPlan,
     role: user.role as UserRole,
   };
 

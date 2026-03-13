@@ -1,3 +1,4 @@
+import type { UserPlan } from "@shared/schema";
 import { clearStoredAuthToken, getStoredAuthToken } from "./auth";
 import { getVisitorHeaders } from "./visitor";
 
@@ -7,6 +8,7 @@ export interface AuthUser {
   createdAt: string | null;
   email: string;
   id: number;
+  plan: UserPlan;
   role: "user" | "admin";
 }
 
@@ -37,6 +39,10 @@ export interface ConversionListResponse {
   page: number;
   total: number;
   totalPages: number;
+}
+
+export interface BillingRedirectResponse {
+  url: string;
 }
 
 function buildHeaders(extraHeaders?: HeadersInit) {
@@ -123,6 +129,37 @@ export async function logoutUser(): Promise<void> {
   if (!res.ok) {
     throw new Error(await readErrorMessage(res, "Logout failed."));
   }
+}
+
+export async function createBillingCheckout(
+  plan: Exclude<UserPlan, "free">,
+): Promise<BillingRedirectResponse> {
+  const res = await fetch(`${API_BASE}/api/billing/checkout`, {
+    method: "POST",
+    headers: buildHeaders({
+      "Content-Type": "application/json",
+    }),
+    body: JSON.stringify({ plan }),
+  });
+
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res, "Failed to start checkout."));
+  }
+
+  return res.json();
+}
+
+export async function createBillingPortal(): Promise<BillingRedirectResponse> {
+  const res = await fetch(`${API_BASE}/api/billing/portal`, {
+    method: "POST",
+    headers: buildHeaders(),
+  });
+
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res, "Failed to open billing portal."));
+  }
+
+  return res.json();
 }
 
 export async function uploadAndConvert(

@@ -282,27 +282,27 @@ Phased implementation plan for turning the current demo into a real file convers
 
 ### 6.1 Usage tracking schema
 
-- [ ] Add `plan` field to `users`: `free|pro|business`
-- [ ] Add `usageEvents` table: `userId`, `eventType` (`conversion`), `format`, `fileSize`, `createdAt`
-- [ ] Record a usage event on every successful conversion
+- [x] Add `plan` field to `users`: `free|pro|business`
+- [x] Add `usageEvents` table: `userId`, `eventType` (`conversion`), `format`, `fileSize`, `createdAt`
+- [x] Record a usage event on every successful conversion
 
 ### 6.2 Limit enforcement
 
-- [ ] Create `server/limits.ts` defining per-plan limits:
+- [x] Create `server/limits.ts` defining per-plan limits:
   - `free`: 10 conversions/day, 10MB max file size, 1-hour retention
   - `pro`: 500 conversions/day, 100MB max file size, 7-day retention
   - `business`: unlimited conversions, 500MB max file size, 30-day retention
-- [ ] In `POST /api/convert`: check today's usage count before accepting upload; reject with 429 if over limit
-- [ ] Enforce file size limit per plan (override Multer's global 50MB limit dynamically)
+- [x] In `POST /api/convert`: check today's usage count before accepting upload; reject with 429 if over limit
+- [x] Enforce file size limit per plan (override Multer's global 50MB limit dynamically)
 
 ### 6.3 Stripe integration
 
-- [ ] Install `stripe`
-- [ ] Add `stripeCustomerId` and `stripeSubscriptionId` to `users` table
-- [ ] `POST /api/billing/checkout` — create Stripe Checkout session for plan upgrade
-- [ ] `POST /api/billing/portal` — create Stripe customer portal session for plan management
-- [ ] `POST /api/billing/webhook` — handle `customer.subscription.updated` and `customer.subscription.deleted` to sync `plan` field
-- [ ] Add `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` to `.env`
+- [x] Install `stripe`
+- [x] Add `stripeCustomerId` and `stripeSubscriptionId` to `users` table
+- [x] `POST /api/billing/checkout` — create Stripe Checkout session for plan upgrade
+- [x] `POST /api/billing/portal` — create Stripe customer portal session for plan management
+- [x] `POST /api/billing/webhook` — handle `customer.subscription.updated` and `customer.subscription.deleted` to sync `plan` field
+- [x] Add `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` to `.env`
 
 ---
 
