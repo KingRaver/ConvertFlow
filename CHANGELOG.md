@@ -90,3 +90,82 @@
 - `script/build.ts`: replaced stale `xlsx` entry in the server bundle allowlist with `exceljs`
 
 ---
+
+## Phase 3 — Background Job Queue
+
+### Queue adapter layer (`server/queue.ts`)
+- Defined `QueueRuntime` interface with `startServer`, `startWorker`, `enqueueConversionJob`, `scheduleExpiryJob`, and `stop` methods
+- Implemented `MemoryQueueRuntime` — in-process fallback used when `DATABASE_URL` is absent; supports per-queue concurrency limits, delayed job scheduling via `setTimeout`, and a recurring expiry sweep via `setInterval`
+- Implemented `PgBossQueueRuntime` — production backend backed by `pg-boss` on the existing PostgreSQL connection; no additional infra required
+- Singleton `queueRuntime` selected at module load: `PgBossQueueRuntime` when `DATABASE_URL` is present, `MemoryQueueRuntime` otherwise
+- Exported `startQueueServerRuntime` (server entrypoint), `startQueueWorkerRuntime` (standalone worker entrypoint), `enqueueConversionJob`, and `scheduleConversionExpiryJob`
+
+### Conversion worker (`server/conversion-jobs.ts`)
+- Extracted `processQueuedConversion` from `server/routes.ts` into a standalone async function that runs in the worker context
+- Worker flow: load conversion record → guard expired/completed/failed → set status `processing` → convert → upload output → delete input → update record `completed`
+- `expireConversionRecord` deletes the stored output object then hard-deletes the database row
+- `expireConversionById` performs a guarded expiry callable from both queue worker and maintenance sweep
+
+### Queue routing and concurrency
+- Five format-family queues: `conversion-image` (4 concurrent), `conversion-audio` (2), `conversion-data` (2), `conversion-document` (2), `conversion-video` (1)
+- Job timeout at queue level matches the per-converter `CONVERTER_TIMEOUT_MS` constant; `retryLimit: 0` on all jobs
+- Queue records auto-deleted after 1 hour via `deleteAfterSeconds`
+
+### Expiry and maintenance
+- Dedicated `conversion-expiry` queue handles per-job scheduled expiry; deduplicated by `id: conversion-expiry-{id}` to prevent double-firing
+- Recurring `conversion-expiry-sweep` queue runs every 10 minutes via cron (`*/10 * * * *` on pg-boss, `setInterval` on memory runtime) to catch any jobs missed by the per-job expiry
+- `server/maintenance.ts` updated: `cleanupExpiredConversions` now delegates to `expireConversionRecord` which handles object storage cleanup before row deletion; `sweepDirectory(UPLOAD_TMP_DIR)` clears stale temp uploads on each pass
+
+### Routes integration (`server/routes.ts`)
+- `POST /api/convert` now creates a job with `status: "pending"` and returns 201 immediately after enqueueing — no longer awaits conversion inline
+- `scheduleConversionExpiryJob` called with the job's `expiresAt` immediately after enqueue
+- `EMBEDDED_CONVERSION_WORKER` env var controls whether the server process also runs workers; defaults to `true` in dev and when no database is configured
+
+### Environment config
+- Added `EMBEDDED_CONVERSION_WORKER=true` to `.env.example` with `true` as the dev default
+
+### Tests
+- `tests/conversionJobs.test.ts` — covers `processQueuedConversion`: successful txt→docx conversion, missing input file, already-expired job, completed/failed early-exit guard
+- `tests/serverRoutes.test.ts` — updated: upload route returns `status: "pending"` immediately; status poll eventually resolves to `completed`; download redirect returns signed URL; expired jobs return 404
+
+---
+
+## Phase 4 — Object Storage
+
+### Storage adapter interface (`server/filestore/index.ts`)
+- Defined `FileStore` interface: `save(localPath, key)`, `get(key, localPath)`, `delete(key)`, `getDownloadUrl(key, filename)`
+- Helper functions: `getUploadObjectKey(filename)` → `uploads/{filename}`, `getOutputObjectKey(filename)` → `outputs/{filename}`, `getDownloadFilename(originalName, targetFormat)` → clean `{base}.{ext}` output filename
+- Singleton `filestore` selected at module load based on `STORAGE_DRIVER` env var (`local` default, `s3` for production)
+- Logs active driver at startup: `[filestore] Storage driver: {driver}`
+
+### Local file store (`server/filestore/local.ts`)
+- `LocalFileStore` wraps local disk; keys are validated via `normalizeStorageKey()` to prevent path traversal (blocks `..`, absolute paths, and keys outside `uploads/` or `outputs/` prefixes)
+- HMAC-SHA256 signed download URLs with 15-minute expiry; `crypto.timingSafeEqual` prevents timing attacks on signature comparison
+- `parseLocalDownloadParams` validates expiry timestamp, hex-format signature, and key prefix before serving files
+- `getLocalSigningSecret()` throws at startup in `NODE_ENV=production` if neither `LOCAL_FILESTORE_SIGNING_SECRET` nor `SESSION_SECRET` is configured; warns in development and falls back to an insecure default
+- Structured logging on all operations: save, get, delete, getDownloadUrl
+
+### S3 file store (`server/filestore/s3.ts`)
+- `S3FileStore` uses `@aws-sdk/client-s3` and `@aws-sdk/s3-request-presigner`; all four AWS credential env vars are validated at construction via `getRequiredEnv()`
+- Pre-signed download URLs use `GetObjectCommand` with `ResponseContentDisposition` set to RFC 5987 encoded `attachment; filename=` header; 15-minute expiry
+- All S3 operations wrapped in try/catch with descriptive error messages (`"S3 upload failed for {key}: ..."`, `"S3 download failed..."`, etc.) to surface credential and network failures clearly in logs
+- Structured logging on all operations
+
+### Upload and worker flow integration
+- `POST /api/convert`: Multer writes temp file → `filestore.save(file.path, inputKey)` → `safeUnlink(file.path)` → create conversion record → enqueue worker; on any failure, `filestore.delete(inputKey)` cleans up the stored object
+- Worker (`processQueuedConversion`): `filestore.get(inputKey, workspace.inputPath)` → convert locally → `filestore.save(workspace.outputPath, outputKey)` → `safeDeleteStoredFile(inputKey)`; temp workspace cleaned in `finally` block only (removed redundant `safeUnlink` calls from `catch`)
+- `outputFilename` in the worker reuses the existing database value if present (`conversion.outputFilename ?? uuidv4()...`), making the worker idempotent if retries are ever introduced
+
+### Download flow
+- `GET /api/download/:filename` now calls `filestore.getDownloadUrl(outputKey, downloadFilename)` and redirects; no longer serves local files directly
+- Local driver redirects to `GET /api/download/local?key=...&expires=...&signature=...`; S3 driver redirects to an AWS SigV4 pre-signed URL
+- `expireConversionRecord` deletes the output object from the filestore before deleting the database row
+
+### Environment config
+- Added `STORAGE_DRIVER`, `AWS_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `LOCAL_FILESTORE_SIGNING_SECRET` to `.env.example`
+- `LOCAL_FILESTORE_SIGNING_SECRET` entry includes generation command: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+
+### Dependencies
+- Added `@aws-sdk/client-s3` and `@aws-sdk/s3-request-presigner`
+
+---

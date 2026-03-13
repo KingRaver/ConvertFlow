@@ -201,7 +201,7 @@ Phased implementation plan for turning the current demo into a real file convers
 
 ### 4.1 Storage adapter interface
 
-- [ ] Create `server/filestore/index.ts` with interface:
+- [x] Create `server/filestore/index.ts` with interface:
   ```ts
   interface FileStore {
     save(localPath: string, key: string): Promise<void>;
@@ -210,26 +210,26 @@ Phased implementation plan for turning the current demo into a real file convers
     getDownloadUrl(key: string, filename: string): Promise<string>;
   }
   ```
-- [ ] Implement `server/filestore/local.ts` — wraps existing local disk behavior (used in dev/test)
-- [ ] Implement `server/filestore/s3.ts` — uses `@aws-sdk/client-s3` and `@aws-sdk/s3-request-presigner`
+- [x] Implement `server/filestore/local.ts` — wraps existing local disk behavior (used in dev/test)
+- [x] Implement `server/filestore/s3.ts` — uses `@aws-sdk/client-s3` and `@aws-sdk/s3-request-presigner`
 
 ### 4.2 Upload flow with object storage
 
-- [ ] After Multer writes the file to `/uploads`, upload to object storage with key `uploads/{uuid}.{ext}`
-- [ ] Delete the local temp file after upload
-- [ ] Worker downloads the file from object storage to a temp path before converting
-- [ ] Worker uploads the output to object storage with key `outputs/{uuid}.{targetFormat}`
-- [ ] Worker deletes the input key from object storage
+- [x] After Multer writes the file to `/uploads`, upload to object storage with key `uploads/{uuid}.{ext}`
+- [x] Delete the local temp file after upload
+- [x] Worker downloads the file from object storage to a temp path before converting
+- [x] Worker uploads the output to object storage with key `outputs/{uuid}.{targetFormat}`
+- [x] Worker deletes the input key from object storage
 
 ### 4.3 Download flow with object storage
 
-- [ ] `GET /api/download/:filename` generates a pre-signed URL (15-minute expiry) and redirects to it
-- [ ] Remove local `OUTPUT_DIR` file serving
+- [x] `GET /api/download/:filename` generates a pre-signed URL (15-minute expiry) and redirects to it
+- [x] Remove local `OUTPUT_DIR` file serving
 
 ### 4.4 Environment config
 
-- [ ] Add to `.env`: `STORAGE_DRIVER=local|s3`, `AWS_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-- [ ] Export `filestore` singleton from `server/filestore/index.ts` based on `STORAGE_DRIVER`
+- [x] Add to `.env`: `STORAGE_DRIVER=local|s3`, `AWS_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+- [x] Export `filestore` singleton from `server/filestore/index.ts` based on `STORAGE_DRIVER`
 
 ---
 
@@ -428,6 +428,7 @@ AWS_BUCKET=
 AWS_REGION=
 AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
+LOCAL_FILESTORE_SIGNING_SECRET=
 
 # Queue (if using BullMQ)
 REDIS_URL=redis://localhost:6379

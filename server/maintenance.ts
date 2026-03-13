@@ -1,11 +1,9 @@
-import path from "node:path";
+import { expireConversionRecord } from "./conversion-jobs";
 import type { IStorage } from "./storage";
 import { storage } from "./storage";
 import {
-  OUTPUT_DIR,
-  UPLOAD_DIR,
+  UPLOAD_TMP_DIR,
   ensureWorkingDirectories,
-  safeUnlink,
   sweepDirectory,
 } from "./files";
 
@@ -20,12 +18,7 @@ export async function cleanupExpiredConversions(
   const expiredConversions = await activeStorage.getExpiredConversions(now);
 
   for (const conversion of expiredConversions) {
-    const outputPath = conversion.outputFilename
-      ? path.join(OUTPUT_DIR, conversion.outputFilename)
-      : null;
-
-    safeUnlink(outputPath);
-    await activeStorage.deleteConversion(conversion.id);
+    await expireConversionRecord(conversion, activeStorage);
   }
 
   return expiredConversions.length;
@@ -41,8 +34,7 @@ export async function recoverStuckProcessingJobs(
 
 async function runCleanupPass(activeStorage: IStorage = storage, now = new Date()) {
   const cleaned = await cleanupExpiredConversions(activeStorage, now);
-  sweepDirectory(UPLOAD_DIR);
-  sweepDirectory(OUTPUT_DIR);
+  sweepDirectory(UPLOAD_TMP_DIR);
   return cleaned;
 }
 

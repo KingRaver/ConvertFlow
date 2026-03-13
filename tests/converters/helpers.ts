@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import sharp from "sharp";
 import PDFDocument from "pdfkit";
 import { Document, Packer, Paragraph } from "docx";
-import XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { resolveFfmpegBinary, runCommand } from "../../server/converters/runtime";
 
 export async function withTempDir<T>(run: (dir: string) => Promise<T>) {
@@ -175,13 +175,18 @@ export async function createPdfFixture(outputPath: string) {
 }
 
 export async function createXlsxFixture(outputPath: string) {
-  const workbook = XLSX.utils.book_new();
-  const worksheet = XLSX.utils.json_to_sheet([
-    { name: "Ada", score: 42, active: true },
-    { name: "Linus", score: 35, active: false },
-  ]);
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
-  XLSX.writeFile(workbook, outputPath);
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet("Sheet1");
+
+  worksheet.columns = [
+    { header: "name", key: "name" },
+    { header: "score", key: "score" },
+    { header: "active", key: "active" },
+  ];
+  worksheet.addRow({ name: "Ada", score: 42, active: true });
+  worksheet.addRow({ name: "Linus", score: 35, active: false });
+
+  await workbook.xlsx.writeFile(outputPath);
 }
 
 export async function createWavFixture(outputPath: string) {

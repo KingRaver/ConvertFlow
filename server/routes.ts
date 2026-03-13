@@ -2,12 +2,13 @@ import type { Express, NextFunction, Request, Response } from "express";
 import type { Server } from "http";
 import multer from "multer";
 import path from "path";
-import fs from "fs";
 import { v4 as uuidv4 } from "uuid";
 import type { Conversion } from "@shared/schema";
 import { SUPPORTED_CONVERSIONS } from "@shared/schema";
 import { VISITOR_ID_HEADER, isValidVisitorId } from "@shared/visitor";
-import { FILE_TTL_MS, OUTPUT_DIR, UPLOAD_DIR, ensureWorkingDirectories, safeUnlink } from "./files";
+import { FILE_TTL_MS, UPLOAD_TMP_DIR, ensureWorkingDirectories, safeUnlink } from "./files";
+import { filestore, getDownloadFilename, getOutputObjectKey, getUploadObjectKey } from "./filestore";
+import { getLocalPathFromDownloadKey, parseLocalDownloadParams } from "./filestore/local";
 import { expireConversionRecord, formatQueuedMessage } from "./conversion-jobs";
 import {
   enqueueConversionJob,
@@ -44,7 +45,7 @@ ensureWorkingDirectories();
 
 const upload = multer({
   storage: multer.diskStorage({
-    destination: UPLOAD_DIR,
+    destination: UPLOAD_TMP_DIR,
     filename: (_req, file, cb) => {
       const uniqueName = `${uuidv4()}${path.extname(file.originalname)}`;
       cb(null, uniqueName);
@@ -83,6 +84,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
 
     let conversion: Conversion | null = null;
+    let inputKey: string | null = null;
 
     try {
       const file = req.file;
@@ -106,6 +108,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
 
       const expiresAt = new Date(Date.now() + FILE_TTL_MS);
+      inputKey = getUploadObjectKey(file.filename);
+      await filestore.save(file.path, inputKey);
+      safeUnlink(file.path);
 
       conversion = await storage.createConversion({
         originalName: file.originalname,
@@ -124,7 +129,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       await scheduleConversionExpiryJob({ conversionId: conversion.id }, expiresAt);
       await enqueueConversionJob({
         conversionId: conversion.id,
-        inputPath: file.path,
+        inputKey,
         sourceFormat,
         targetFormat,
       });
@@ -132,6 +137,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(201).json(serializeConversion(conversion));
     } catch (err: unknown) {
       safeUnlink(req.file?.path);
+      if (inputKey) {
+        try {
+          await filestore.delete(inputKey);
+        } catch (deleteError) {
+          console.error(`Failed to delete uploaded object: ${inputKey}`, deleteError);
+        }
+      }
       if (conversion) {
         await storage.deleteConversion(conversion.id);
       }
@@ -165,6 +177,29 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     return res.json(serializeConversion(conversion));
   });
 
+  app.get("/api/download/local", (req: Request, res: Response, next: NextFunction) => {
+    const params = parseLocalDownloadParams(
+      req.query as Record<string, string | string[] | undefined>,
+    );
+
+    if (!params) {
+      return res.status(404).json({ error: "Download expired." });
+    }
+
+    return res.download(getLocalPathFromDownloadKey(params.key), params.filename, (error) => {
+      if (!error) {
+        return;
+      }
+
+      if (!res.headersSent && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        res.status(404).json({ error: "The converted file is no longer available." });
+        return;
+      }
+
+      next(error);
+    });
+  });
+
   app.get("/api/download/:filename", async (req: Request, res: Response) => {
     const visitorId = getVisitorId(req, res);
     if (!visitorId) {
@@ -186,14 +221,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(404).json({ error: "Download expired." });
     }
 
-    const filePath = path.join(OUTPUT_DIR, filename);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({
-        error: "The converted file is no longer available.",
-      });
-    }
+    const downloadUrl = await filestore.getDownloadUrl(
+      getOutputObjectKey(filename),
+      getDownloadFilename(conversion.originalName, conversion.targetFormat),
+    );
 
-    return res.download(filePath, filename);
+    return res.redirect(downloadUrl);
   });
 
   app.get("/api/conversions", async (req: Request, res: Response) => {

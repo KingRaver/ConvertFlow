@@ -1,16 +1,20 @@
 import fs from "node:fs";
+import fsPromises from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { v4 as uuidv4 } from "uuid";
 import type { Conversion } from "@shared/schema";
 import { ConversionError } from "./converters";
 import { registry } from "./converters/registry";
 import { validateOutputFile } from "./converters/validation";
-import { OUTPUT_DIR, safeUnlink } from "./files";
+import { filestore, getOutputObjectKey } from "./filestore";
+import { safeUnlink } from "./files";
+import type { IStorage } from "./storage";
 import { storage } from "./storage";
 
 export interface ConversionJobPayload {
   conversionId: number;
-  inputPath: string;
+  inputKey: string;
   sourceFormat: string;
   targetFormat: string;
 }
@@ -47,18 +51,56 @@ function formatFailureMessage(
   return `Failed to convert .${sourceFormat} to .${targetFormat}.`;
 }
 
-export async function expireConversionRecord(conversion: Conversion) {
-  safeUnlink(
-    conversion.outputFilename ? path.join(OUTPUT_DIR, conversion.outputFilename) : null,
+async function safeDeleteStoredFile(key: string | null | undefined) {
+  if (!key) {
+    return;
+  }
+
+  try {
+    await filestore.delete(key);
+  } catch (error) {
+    console.error(`Failed to delete stored object: ${key}`, error);
+  }
+}
+
+async function createJobWorkspace(sourceFormat: string, targetFormat: string) {
+  const dir = await fsPromises.mkdtemp(path.join(os.tmpdir(), "convertflow-job-"));
+
+  return {
+    dir,
+    inputPath: path.join(dir, `input.${sourceFormat}`),
+    outputPath: path.join(dir, `output.${targetFormat}`),
+  };
+}
+
+async function cleanupWorkspace(dir: string | null) {
+  if (!dir) {
+    return;
+  }
+
+  try {
+    await fsPromises.rm(dir, { force: true, recursive: true });
+  } catch (error) {
+    console.error(`Failed to remove temp workspace: ${dir}`, error);
+  }
+}
+
+export async function expireConversionRecord(
+  conversion: Conversion,
+  activeStorage: IStorage = storage,
+) {
+  await safeDeleteStoredFile(
+    conversion.outputFilename ? getOutputObjectKey(conversion.outputFilename) : null,
   );
-  await storage.deleteConversion(conversion.id);
+  await activeStorage.deleteConversion(conversion.id);
 }
 
 export async function expireConversionById(
   { conversionId }: ExpiryJobPayload,
   now = new Date(),
+  activeStorage: IStorage = storage,
 ) {
-  const conversion = await storage.getConversion(conversionId);
+  const conversion = await activeStorage.getConversion(conversionId);
 
   if (!conversion) {
     return false;
@@ -68,44 +110,46 @@ export async function expireConversionById(
     return false;
   }
 
-  await expireConversionRecord(conversion);
+  await expireConversionRecord(conversion, activeStorage);
   return true;
 }
 
 export async function processQueuedConversion({
   conversionId,
-  inputPath,
+  inputKey,
   sourceFormat,
   targetFormat,
 }: ConversionJobPayload) {
-  const conversion = await storage.getConversion(conversionId).catch((error) => {
-    safeUnlink(inputPath);
+  const conversion = await storage.getConversion(conversionId).catch(async (error) => {
+    await safeDeleteStoredFile(inputKey);
     throw error;
   });
 
   if (!conversion) {
-    safeUnlink(inputPath);
+    await safeDeleteStoredFile(inputKey);
     return;
   }
 
   if (conversion.expiresAt && conversion.expiresAt.getTime() <= Date.now()) {
-    safeUnlink(inputPath);
+    await safeDeleteStoredFile(inputKey);
     await expireConversionRecord(conversion);
     return;
   }
 
   if (conversion.status === "completed" || conversion.status === "failed") {
-    safeUnlink(inputPath);
+    await safeDeleteStoredFile(inputKey);
     return;
   }
 
-  const outputFilename = `${uuidv4()}.${targetFormat}`;
-  const outputPath = path.join(OUTPUT_DIR, outputFilename);
+  const outputFilename = conversion.outputFilename ?? `${uuidv4()}.${targetFormat}`;
+  const outputKey = getOutputObjectKey(outputFilename);
   let engineUsed: string | null = conversion.engineUsed ?? null;
+  let workspace: Awaited<ReturnType<typeof createJobWorkspace>> | null = null;
 
   try {
     const adapter = registry.getAdapter(sourceFormat, targetFormat);
     engineUsed = adapter.engineName;
+    workspace = await createJobWorkspace(sourceFormat, targetFormat);
 
     await storage.updateConversion(conversionId, {
       engineUsed,
@@ -114,12 +158,13 @@ export async function processQueuedConversion({
       status: "processing",
     });
 
-    await adapter.convert(inputPath, outputPath);
-    await validateOutputFile(outputPath, targetFormat);
+    await filestore.get(inputKey, workspace.inputPath);
+    await adapter.convert(workspace.inputPath, workspace.outputPath);
+    await validateOutputFile(workspace.outputPath, targetFormat);
+    await filestore.save(workspace.outputPath, outputKey);
+    await safeDeleteStoredFile(inputKey);
 
-    safeUnlink(inputPath);
-
-    const convertedSize = fs.statSync(outputPath).size;
+    const convertedSize = fs.statSync(workspace.outputPath).size;
     await storage.updateConversion(conversionId, {
       convertedSize,
       engineUsed,
@@ -128,8 +173,8 @@ export async function processQueuedConversion({
       status: "completed",
     });
   } catch (error) {
-    safeUnlink(inputPath);
-    safeUnlink(outputPath);
+    await safeDeleteStoredFile(inputKey);
+    await safeDeleteStoredFile(outputKey);
 
     await storage.updateConversion(conversionId, {
       convertedSize: null,
@@ -138,5 +183,9 @@ export async function processQueuedConversion({
       resultMessage: formatFailureMessage(error, sourceFormat, targetFormat),
       status: "failed",
     });
+  } finally {
+    safeUnlink(workspace?.inputPath);
+    safeUnlink(workspace?.outputPath);
+    await cleanupWorkspace(workspace?.dir ?? null);
   }
 }

@@ -9,17 +9,23 @@ import {
   expireConversionRecord,
   processQueuedConversion,
 } from "../server/conversion-jobs";
-import { OUTPUT_DIR, UPLOAD_DIR, ensureWorkingDirectories } from "../server/files";
+import { OUTPUT_DIR, ensureWorkingDirectories } from "../server/files";
+import { getUploadObjectKey } from "../server/filestore";
 import { storage } from "../server/storage";
 
 const VISITOR_ID = "cf_88888888-8888-4888-8888-888888888888";
 const FIXTURE_TXT = path.join(process.cwd(), "tests/fixtures/sample.txt");
 
-function writeUploadFile(content: string | Buffer, ext: string): string {
+function getLocalObjectPath(key: string) {
+  return path.join(process.cwd(), key);
+}
+
+function writeUploadObject(content: string | Buffer, ext: string) {
   ensureWorkingDirectories();
-  const inputPath = path.join(UPLOAD_DIR, `${uuidv4()}.${ext}`);
+  const inputKey = getUploadObjectKey(`${uuidv4()}.${ext}`);
+  const inputPath = getLocalObjectPath(inputKey);
   fs.writeFileSync(inputPath, content);
-  return inputPath;
+  return { inputKey, inputPath };
 }
 
 async function makeConversion(overrides: Partial<InsertConversion> = {}) {
@@ -45,12 +51,12 @@ async function makeConversion(overrides: Partial<InsertConversion> = {}) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 test("processQueuedConversion converts txt→docx and marks the job completed", async (t) => {
-  const inputPath = writeUploadFile(fs.readFileSync(FIXTURE_TXT), "txt");
+  const { inputKey, inputPath } = writeUploadObject(fs.readFileSync(FIXTURE_TXT), "txt");
   const conversion = await makeConversion();
 
   await processQueuedConversion({
     conversionId: conversion.id,
-    inputPath,
+    inputKey,
     sourceFormat: "txt",
     targetFormat: "docx",
   });
@@ -73,12 +79,13 @@ test("processQueuedConversion converts txt→docx and marks the job completed", 
 });
 
 test("processQueuedConversion marks the job failed and cleans up when input file is missing", async () => {
-  const inputPath = path.join(UPLOAD_DIR, `${uuidv4()}.txt`); // not created
+  const inputKey = getUploadObjectKey(`${uuidv4()}.txt`); // not created
+  const inputPath = getLocalObjectPath(inputKey);
   const conversion = await makeConversion();
 
   await processQueuedConversion({
     conversionId: conversion.id,
-    inputPath,
+    inputKey,
     sourceFormat: "txt",
     targetFormat: "docx",
   });
@@ -92,11 +99,11 @@ test("processQueuedConversion marks the job failed and cleans up when input file
 });
 
 test("processQueuedConversion cleans up input file when the conversion record is missing", async () => {
-  const inputPath = writeUploadFile("hello\n", "txt");
+  const { inputKey, inputPath } = writeUploadObject("hello\n", "txt");
 
   await processQueuedConversion({
     conversionId: 9_000_001, // record does not exist
-    inputPath,
+    inputKey,
     sourceFormat: "txt",
     targetFormat: "docx",
   });
@@ -105,14 +112,14 @@ test("processQueuedConversion cleans up input file when the conversion record is
 });
 
 test("processQueuedConversion cleans up and expires a conversion that has already passed its TTL", async () => {
-  const inputPath = writeUploadFile("hello\n", "txt");
+  const { inputKey, inputPath } = writeUploadObject("hello\n", "txt");
   const conversion = await makeConversion({
     expiresAt: new Date(Date.now() - 1_000), // already expired
   });
 
   await processQueuedConversion({
     conversionId: conversion.id,
-    inputPath,
+    inputKey,
     sourceFormat: "txt",
     targetFormat: "docx",
   });
@@ -126,12 +133,12 @@ test("processQueuedConversion cleans up and expires a conversion that has alread
 });
 
 test("processQueuedConversion is a no-op for already-completed jobs", async () => {
-  const inputPath = writeUploadFile("hello\n", "txt");
+  const { inputKey, inputPath } = writeUploadObject("hello\n", "txt");
   const conversion = await makeConversion({ status: "completed" });
 
   await processQueuedConversion({
     conversionId: conversion.id,
-    inputPath,
+    inputKey,
     sourceFormat: "txt",
     targetFormat: "docx",
   });
@@ -143,12 +150,12 @@ test("processQueuedConversion is a no-op for already-completed jobs", async () =
 });
 
 test("processQueuedConversion is a no-op for already-failed jobs", async () => {
-  const inputPath = writeUploadFile("hello\n", "txt");
+  const { inputKey, inputPath } = writeUploadObject("hello\n", "txt");
   const conversion = await makeConversion({ status: "failed" });
 
   await processQueuedConversion({
     conversionId: conversion.id,
-    inputPath,
+    inputKey,
     sourceFormat: "txt",
     targetFormat: "docx",
   });

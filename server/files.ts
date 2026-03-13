@@ -2,11 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 export const UPLOAD_DIR = path.join(process.cwd(), "uploads");
+export const UPLOAD_TMP_DIR = path.join(UPLOAD_DIR, "_tmp");
 export const OUTPUT_DIR = path.join(process.cwd(), "outputs");
 export const FILE_TTL_MS = 30 * 60 * 1000;
 
 export function ensureWorkingDirectories() {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 }
 

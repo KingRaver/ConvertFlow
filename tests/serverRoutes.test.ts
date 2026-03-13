@@ -1,13 +1,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import express from "express";
 import { createServer } from "node:http";
 import { registerRoutes } from "../server/routes";
+import { OUTPUT_DIR } from "../server/files";
 import { VISITOR_ID_HEADER } from "../shared/visitor";
 import { storage } from "../server/storage";
 
 const VISITOR_A = "cf_55555555-5555-4555-8555-555555555555";
 const VISITOR_B = "cf_66666666-6666-4666-8666-666666666666";
+
+function removeOutputFile(outputFilename?: string | null) {
+  if (!outputFilename) {
+    return;
+  }
+
+  const outputPath = path.join(OUTPUT_DIR, outputFilename);
+  if (fs.existsSync(outputPath)) {
+    fs.unlinkSync(outputPath);
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -121,6 +135,9 @@ test("route handlers scope job status and history to the current visitor", async
   });
 
   const created = await createDemoJob(server.baseUrl, VISITOR_A);
+  t.after(async () => {
+    await storage.deleteConversion(created.id);
+  });
 
   const ownStatus = await fetch(`${server.baseUrl}/api/convert/${created.id}`, {
     headers: {
@@ -189,6 +206,10 @@ test("queued uploads return pending immediately before the worker settles them",
   assert.equal(created.status, "pending");
   assert.equal(created.processingStartedAt, null);
   assert.equal(created.resultMessage, "Queued .txt to .docx conversion.");
+
+  const settled = await waitForSettledJob(server.baseUrl, VISITOR_A, created.id);
+  removeOutputFile(settled.outputFilename);
+  await storage.deleteConversion(created.id);
 });
 
 test("completed jobs expose a real visitor-scoped download", async (t) => {
@@ -204,11 +225,18 @@ test("completed jobs expose a real visitor-scoped download", async (t) => {
   assert.equal(status.engineUsed, "docx");
   assert.ok(status.outputFilename);
 
-  const ownDownload = await fetch(`${server.baseUrl}/api/download/${status.outputFilename}`, {
+  const ownDownloadRedirect = await fetch(`${server.baseUrl}/api/download/${status.outputFilename}`, {
     headers: {
       [VISITOR_ID_HEADER]: VISITOR_A,
     },
+    redirect: "manual",
   });
+  assert.equal(ownDownloadRedirect.status, 302);
+  const location = ownDownloadRedirect.headers.get("location");
+  assert.ok(location);
+  assert.match(location, /^\/api\/download\/local\?/);
+
+  const ownDownload = await fetch(new URL(location, server.baseUrl));
   assert.equal(ownDownload.status, 200);
 
   const downloadedBytes = Buffer.from(await ownDownload.arrayBuffer());
@@ -220,6 +248,9 @@ test("completed jobs expose a real visitor-scoped download", async (t) => {
     },
   });
   assert.equal(foreignDownload.status, 404);
+
+  removeOutputFile(status.outputFilename);
+  await storage.deleteConversion(created.id);
 });
 
 test("failed jobs expose their error status but no downloadable output", async (t) => {
@@ -239,6 +270,7 @@ test("failed jobs expose their error status but no downloadable output", async (
     headers: { [VISITOR_ID_HEADER]: VISITOR_A },
   });
   assert.equal(download.status, 404);
+  await storage.deleteConversion(created.id);
 });
 
 test("GET /api/convert/:id returns 404 and cleans up an expired conversion", async (t) => {
