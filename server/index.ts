@@ -5,7 +5,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { runStartupMaintenance, startExpiredConversionCleanup } from "./maintenance";
 
-(process as NodeJS.Process & { loadEnvFile?: () => void }).loadEnvFile?.();
+try { (process as NodeJS.Process & { loadEnvFile?: () => void }).loadEnvFile?.(); } catch { /* no .env file in production */ }
 
 const app = express();
 const httpServer = createServer(app);

@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import * as schema from "@shared/schema";
 
-(process as NodeJS.Process & { loadEnvFile?: () => void }).loadEnvFile?.();
+try { (process as NodeJS.Process & { loadEnvFile?: () => void }).loadEnvFile?.(); } catch { /* no .env file in production */ }
 
 export const databaseUrl = process.env.DATABASE_URL?.trim() || undefined;
 
