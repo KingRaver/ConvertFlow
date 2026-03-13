@@ -7,6 +7,7 @@ import mammoth from "mammoth";
 import PDFDocument from "pdfkit";
 import { PDFParse } from "pdf-parse";
 import sharp from "sharp";
+import { stringify as stringifyCsv } from "csv-stringify/sync";
 import { ConversionError, type RegisteredConverterAdapter } from "./index";
 import { resolveTextutilBinary, runCommand, withTimeout } from "./runtime";
 
@@ -193,5 +194,14 @@ export const documentAdapters: RegisteredConverterAdapter[] = [
   }),
   createDocumentAdapter("doc", "txt", "textutil", async (inputPath, outputPath) => {
     await fs.writeFile(outputPath, `${await readLegacyDocText(inputPath)}\n`, "utf8");
+  }),
+  createDocumentAdapter("pdf", "csv", "pdf-parse+csv-stringify", async (inputPath, outputPath) => {
+    const text = await extractPdfText(inputPath);
+    const rows = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => [line.replace(/\s{2,}/g, "\t").split("\t")].flat());
+    await fs.writeFile(outputPath, stringifyCsv(rows), "utf8");
   }),
 ];

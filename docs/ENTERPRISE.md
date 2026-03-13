@@ -50,7 +50,7 @@ Phased implementation plan for turning the current demo into a real file convers
 ### 1.4 Data conversions
 
 - [x] Install `csv-parse`, `csv-stringify`, `xlsx`
-- [ ] Audit `xlsx` v0.18.5 CVEs before production — this is the last public npm release of SheetJS Community Edition and has known prototype pollution and memory exhaustion vulnerabilities on malformed input; evaluate `exceljs` as a replacement if untrusted files are a concern
+- [x] Audit `xlsx` v0.18.5 CVEs — replaced with `exceljs` (no known CVEs, actively maintained, supports untrusted input safely)
 - [x] Implement `server/converters/data.ts`:
   - `csv→xlsx`: parse CSV with `csv-parse`, write with `xlsx`
   - `csv→json`: parse CSV, serialize to JSON file
@@ -115,7 +115,7 @@ Phased implementation plan for turning the current demo into a real file convers
 
 - [x] Add `DATABASE_URL` to `.env` and `.env.example`
 - [x] Create `server/db.ts` that initializes `drizzle(pool)` using `pg` and `DATABASE_URL`
-- [ ] Run `npm run db:push` to create the `conversions` table (schema already defined in `shared/schema.ts`)
+- [x] Run `npm run db:push` to create the `conversions` table (schema already defined in `shared/schema.ts`)
 
 ### 2.2 Implement DrizzleStorage
 
@@ -140,7 +140,7 @@ Phased implementation plan for turning the current demo into a real file convers
 
 - [x] Add `processingStartedAt: timestamp` to `conversions` table in `shared/schema.ts`
 - [x] Add `engineUsed: text` to record which converter adapter handled the job
-- [ ] Run migration
+- [x] Run migration
 
 ### 2.6 Stuck job recovery on startup
 
@@ -451,7 +451,7 @@ SENTRY_DSN=
 # Phase 1 — converters
 npm install sharp pdf-lib pdf-parse pdfkit mammoth docx libreoffice-convert
 npm install fluent-ffmpeg ffmpeg-static
-npm install csv-parse csv-stringify xlsx
+npm install csv-parse csv-stringify exceljs
 
 # Phase 2 — database
 npm install pg drizzle-orm

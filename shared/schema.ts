@@ -31,7 +31,7 @@ export type ConversionStatus = "pending" | "processing" | "completed" | "failed"
 
 // Supported format conversions
 export const SUPPORTED_CONVERSIONS: Record<string, string[]> = {
-  "pdf": ["docx", "jpg", "png", "txt"],
+  "pdf": ["docx", "jpg", "png", "txt", "csv"],
   "docx": ["pdf", "txt"],
   "doc": ["pdf", "txt"],
   "png": ["jpg", "webp", "pdf"],

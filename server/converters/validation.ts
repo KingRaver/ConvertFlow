@@ -3,7 +3,7 @@ import sharp from "sharp";
 import mammoth from "mammoth";
 import { parse as parseCsv } from "csv-parse/sync";
 import { PDFParse } from "pdf-parse";
-import XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { OutputValidationError, normalizeFormat } from "./index";
 import { resolveFfmpegBinary, runCommand } from "./runtime";
 
@@ -100,8 +100,9 @@ async function validateCsvFile(outputPath: string) {
 
 async function validateXlsxFile(outputPath: string) {
   try {
-    const workbook = XLSX.readFile(outputPath);
-    if (workbook.SheetNames.length === 0) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(outputPath);
+    if (workbook.worksheets.length === 0) {
       throw new Error("Workbook did not contain any sheets.");
     }
   } catch (error) {

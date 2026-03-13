@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import { parse as parseCsv } from "csv-parse/sync";
 import { stringify as stringifyCsv } from "csv-stringify/sync";
-import XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { type RegisteredConverterAdapter } from "./index";
 import { withTimeout } from "./runtime";
 
@@ -22,41 +22,52 @@ function getColumns(rows: Row[]) {
       columns.add(key);
     }
   }
-
   return Array.from(columns);
 }
 
-function writeWorkbook(rows: Row[], outputPath: string) {
-  const workbook = XLSX.utils.book_new();
-  const worksheet = XLSX.utils.json_to_sheet(rows, {
-    header: getColumns(rows),
-  });
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
-  XLSX.writeFile(workbook, outputPath);
+async function writeWorkbook(rows: Row[], outputPath: string) {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet("Sheet1");
+  const columns = getColumns(rows);
+  worksheet.columns = columns.map((key) => ({ header: key, key }));
+  worksheet.addRows(rows);
+  await workbook.xlsx.writeFile(outputPath);
 }
 
-function readWorkbookRows(inputPath: string) {
-  const workbook = XLSX.readFile(inputPath);
-  const firstSheetName = workbook.SheetNames[0];
-  if (!firstSheetName) {
-    return [];
-  }
+async function readWorkbookRows(inputPath: string): Promise<Row[]> {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(inputPath);
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) return [];
 
-  return XLSX.utils.sheet_to_json<Row>(workbook.Sheets[firstSheetName], {
-    defval: "",
+  const headers: string[] = [];
+  worksheet.getRow(1).eachCell((cell) => {
+    headers.push(String(cell.value ?? ""));
   });
+
+  const rows: Row[] = [];
+  worksheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+    const record: Row = {};
+    headers.forEach((header, i) => {
+      const cell = row.getCell(i + 1);
+      const val = cell.value;
+      record[header] =
+        val === null || val === undefined
+          ? null
+          : typeof val === "object" && "result" in val
+            ? (val.result as string | number | boolean | null)
+            : (val as string | number | boolean);
+    });
+    rows.push(record);
+  });
+  return rows;
 }
 
 function stringifyRows(rows: Row[]) {
   const columns = getColumns(rows);
-  if (columns.length === 0) {
-    return "";
-  }
-
-  return stringifyCsv(rows, {
-    columns,
-    header: true,
-  });
+  if (columns.length === 0) return "";
+  return stringifyCsv(rows, { columns, header: true });
 }
 
 function createDataAdapter(
@@ -68,7 +79,7 @@ function createDataAdapter(
     family: "data",
     sourceFormat,
     targetFormat,
-    engineName: "xlsx+csv",
+    engineName: "exceljs+csv",
     async convert(inputPath, outputPath) {
       await withTimeout(
         () => convert(inputPath, outputPath),
@@ -81,18 +92,18 @@ function createDataAdapter(
 export const dataAdapters: RegisteredConverterAdapter[] = [
   createDataAdapter("csv", "xlsx", async (inputPath, outputPath) => {
     const rows = readCsvRows(await fs.readFile(inputPath, "utf8"));
-    writeWorkbook(rows, outputPath);
+    await writeWorkbook(rows, outputPath);
   }),
   createDataAdapter("csv", "json", async (inputPath, outputPath) => {
     const rows = readCsvRows(await fs.readFile(inputPath, "utf8"));
     await fs.writeFile(outputPath, `${JSON.stringify(rows, null, 2)}\n`, "utf8");
   }),
   createDataAdapter("xlsx", "csv", async (inputPath, outputPath) => {
-    const rows = readWorkbookRows(inputPath);
+    const rows = await readWorkbookRows(inputPath);
     await fs.writeFile(outputPath, stringifyRows(rows), "utf8");
   }),
   createDataAdapter("xlsx", "json", async (inputPath, outputPath) => {
-    const rows = readWorkbookRows(inputPath);
+    const rows = await readWorkbookRows(inputPath);
     await fs.writeFile(outputPath, `${JSON.stringify(rows, null, 2)}\n`, "utf8");
   }),
 ];

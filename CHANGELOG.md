@@ -75,5 +75,18 @@
 - `DrizzleStorage.getExpiredConversions`: fixed sort order from `desc` to `asc` to match `MemStorage` behavior (oldest expiry processed first)
 - Railway PostgreSQL provisioned as production database; `conversions` table created via `db:push` against public TCP proxy (`shuttle.proxy.rlwy.net`)
 - Confirmed Phase 2 fully integrated end-to-end
+- `server/index.ts`, `server/db.ts`, `drizzle.config.ts`: wrapped `process.loadEnvFile()` in try/catch — Railway injects env vars directly so no `.env` file exists in production; bare call crashed the server on every deploy
+
+### Security patch
+- Replaced `xlsx@0.18.5` (SheetJS Community Edition, EOL) with `exceljs` across `server/converters/data.ts` and `server/converters/validation.ts` — eliminates known prototype pollution and memory exhaustion CVEs on malformed untrusted input
+- Updated `engineName` from `xlsx+csv` to `exceljs+csv` to reflect the new runtime
+
+### New conversion route
+- `pdf→csv` added to `SUPPORTED_CONVERSIONS` in `shared/schema.ts`
+- Adapter implemented in `server/converters/document.ts` (`pdf-parse+csv-stringify`): extracts PDF text, splits lines into columns on multi-space/tab boundaries, serializes to CSV
+
+### Build fixes
+- `vite.config.ts`: removed `import.meta.url` and `fileURLToPath` — replaced with `path.resolve()` relative strings; file always runs from project root so cwd-relative paths are equivalent and work correctly in both ESM and CJS contexts, eliminating all `import.meta` build warnings
+- `script/build.ts`: replaced stale `xlsx` entry in the server bundle allowlist with `exceljs`
 
 ---
