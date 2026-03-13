@@ -98,6 +98,7 @@ async function waitForSettledJob(baseUrl: string, visitorId: string, conversionI
 
     assert.equal(response.status, 200);
     const json = (await response.json()) as {
+      engineUsed?: string | null;
       outputFilename?: string | null;
       status: "processing" | "completed" | "failed";
     };
@@ -164,6 +165,7 @@ test("completed jobs expose a real visitor-scoped download", async (t) => {
   const status = await waitForSettledJob(server.baseUrl, VISITOR_A, created.id);
 
   assert.equal(status.status, "completed");
+  assert.equal(status.engineUsed, "docx");
   assert.ok(status.outputFilename);
 
   const ownDownload = await fetch(`${server.baseUrl}/api/download/${status.outputFilename}`, {

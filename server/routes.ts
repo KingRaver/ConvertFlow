@@ -7,34 +7,15 @@ import { v4 as uuidv4 } from "uuid";
 import type { Conversion } from "@shared/schema";
 import { SUPPORTED_CONVERSIONS } from "@shared/schema";
 import { VISITOR_ID_HEADER, isValidVisitorId } from "@shared/visitor";
+import type { RegisteredConverterAdapter } from "./converters";
 import { ConversionError } from "./converters";
 import { registry } from "./converters/registry";
 import { validateOutputFile } from "./converters/validation";
+import { FILE_TTL_MS, OUTPUT_DIR, UPLOAD_DIR, ensureWorkingDirectories, safeUnlink } from "./files";
 import { storage } from "./storage";
-
-const UPLOAD_DIR = path.join(process.cwd(), "uploads");
-const OUTPUT_DIR = path.join(process.cwd(), "outputs");
-const FILE_TTL_MS = 30 * 60 * 1000;
-const FALLBACK_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
-
-const expiryTimers = new Map<number, NodeJS.Timeout>();
 
 function getFirstValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
-}
-
-function safeUnlink(filePath: string | null | undefined) {
-  if (!filePath) {
-    return;
-  }
-
-  try {
-    fs.unlinkSync(filePath);
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
-      console.error(`Failed to remove file: ${filePath}`, error);
-    }
-  }
 }
 
 function serializeConversion(conversion: Conversion) {
@@ -57,39 +38,11 @@ function getVisitorId(req: Request, res: Response): string | undefined {
   return visitorId;
 }
 
-function clearScheduledExpiry(conversionId: number) {
-  const existing = expiryTimers.get(conversionId);
-  if (!existing) {
-    return;
-  }
-
-  clearTimeout(existing);
-  expiryTimers.delete(conversionId);
-}
-
-async function expireConversion(
-  conversionId: number,
-  filesToDelete: Array<string | null | undefined>,
-) {
-  clearScheduledExpiry(conversionId);
-  filesToDelete.forEach((filePath) => safeUnlink(filePath));
-  await storage.deleteConversion(conversionId);
-}
-
-function scheduleConversionExpiry(
-  conversionId: number,
-  expiresAt: Date,
-  filesToDelete: Array<string | null | undefined>,
-) {
-  clearScheduledExpiry(conversionId);
-
-  const delayMs = Math.max(0, expiresAt.getTime() - Date.now());
-  const timer = setTimeout(() => {
-    void expireConversion(conversionId, filesToDelete);
-  }, delayMs);
-
-  timer.unref?.();
-  expiryTimers.set(conversionId, timer);
+async function expireConversion(conversion: Conversion) {
+  safeUnlink(
+    conversion.outputFilename ? path.join(OUTPUT_DIR, conversion.outputFilename) : null,
+  );
+  await storage.deleteConversion(conversion.id);
 }
 
 function formatSuccessMessage(sourceFormat: string, targetFormat: string) {
@@ -112,31 +65,7 @@ function formatFailureMessage(
   return `Failed to convert .${sourceFormat} to .${targetFormat}.`;
 }
 
-function sweepDirectory(dir: string) {
-  if (!fs.existsSync(dir)) {
-    return;
-  }
-
-  const now = Date.now();
-  for (const file of fs.readdirSync(dir)) {
-    const filePath = path.join(dir, file);
-
-    try {
-      const stat = fs.statSync(filePath);
-      if (now - stat.mtimeMs > FILE_TTL_MS) {
-        safeUnlink(filePath);
-      }
-    } catch (error) {
-      console.error(`Failed to inspect file during sweep: ${filePath}`, error);
-    }
-  }
-}
-
-[UPLOAD_DIR, OUTPUT_DIR].forEach((dir) => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-});
+ensureWorkingDirectories();
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -159,24 +88,17 @@ const upload = multer({
   },
 });
 
-const fallbackSweepTimer = setInterval(() => {
-  sweepDirectory(UPLOAD_DIR);
-  sweepDirectory(OUTPUT_DIR);
-}, FALLBACK_SWEEP_INTERVAL_MS);
-
-fallbackSweepTimer.unref?.();
-
 async function processConversion({
+  adapter,
   conversionId,
-  expiresAt,
   filePath,
   outputFilename,
   outputPath,
   sourceFormat,
   targetFormat,
 }: {
+  adapter: RegisteredConverterAdapter;
   conversionId: number;
-  expiresAt: Date;
   filePath: string;
   outputFilename: string;
   outputPath: string;
@@ -184,7 +106,6 @@ async function processConversion({
   targetFormat: string;
 }) {
   try {
-    const adapter = registry.getAdapter(sourceFormat, targetFormat);
     await adapter.convert(filePath, outputPath);
     await validateOutputFile(outputPath, targetFormat);
 
@@ -197,8 +118,6 @@ async function processConversion({
       resultMessage: formatSuccessMessage(sourceFormat, targetFormat),
       status: "completed",
     });
-
-    scheduleConversionExpiry(conversionId, expiresAt, [outputPath]);
   } catch (error) {
     safeUnlink(filePath);
     safeUnlink(outputPath);
@@ -209,12 +128,12 @@ async function processConversion({
       resultMessage: formatFailureMessage(error, sourceFormat, targetFormat),
       status: "failed",
     });
-
-    scheduleConversionExpiry(conversionId, expiresAt, []);
   }
 }
 
 export async function registerRoutes(_httpServer: Server, app: Express) {
+  ensureWorkingDirectories();
+
   app.get("/api/formats", (_req: Request, res: Response) => {
     res.json(SUPPORTED_CONVERSIONS);
   });
@@ -251,6 +170,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       const outputFilename = `${uuidv4()}.${targetFormat}`;
       const outputPath = path.join(OUTPUT_DIR, outputFilename);
       const processingStartedAt = new Date();
+      const adapter = registry.getAdapter(sourceFormat, targetFormat);
 
       const conversion = await storage.createConversion({
         originalName: file.originalname,
@@ -260,16 +180,15 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         fileSize: file.size,
         outputFilename: null,
         processingStartedAt,
+        engineUsed: adapter.engineName,
         resultMessage: `Converting .${sourceFormat} to .${targetFormat}.`,
         visitorId,
         expiresAt,
       });
 
-      scheduleConversionExpiry(conversion.id, expiresAt, [file.path, outputPath]);
-
       void processConversion({
+        adapter,
         conversionId: conversion.id,
-        expiresAt,
         filePath: file.path,
         outputFilename,
         outputPath,
@@ -303,10 +222,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
 
     if (conversion.expiresAt && conversion.expiresAt.getTime() <= Date.now()) {
-      const expiredOutput = conversion.outputFilename
-        ? path.join(OUTPUT_DIR, conversion.outputFilename)
-        : null;
-      await expireConversion(conversion.id, [expiredOutput]);
+      await expireConversion(conversion);
       return res.status(404).json({ error: "Conversion expired." });
     }
 
@@ -330,7 +246,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
 
     if (conversion.expiresAt && conversion.expiresAt.getTime() <= Date.now()) {
-      await expireConversion(conversion.id, [path.join(OUTPUT_DIR, filename)]);
+      await expireConversion(conversion);
       return res.status(404).json({ error: "Download expired." });
     }
 

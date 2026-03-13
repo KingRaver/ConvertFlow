@@ -1,7 +1,11 @@
+import process from "node:process";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { runStartupMaintenance, startExpiredConversionCleanup } from "./maintenance";
+
+(process as NodeJS.Process & { loadEnvFile?: () => void }).loadEnvFile?.();
 
 const app = express();
 const httpServer = createServer(app);
@@ -60,6 +64,20 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  const maintenance = await runStartupMaintenance();
+  if (maintenance.recovered > 0) {
+    log(`marked ${maintenance.recovered} stuck job(s) as failed`, "maintenance");
+  }
+  if (maintenance.cleaned > 0) {
+    log(`deleted ${maintenance.cleaned} expired job(s)`, "maintenance");
+  }
+
+  startExpiredConversionCleanup({
+    onError: (error) => {
+      console.error("Expired conversion cleanup failed:", error);
+    },
+  });
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {

@@ -14,6 +14,7 @@ export const conversions = pgTable("conversions", {
   resultMessage: text("result_message"),
   visitorId: text("visitor_id").notNull(),
   processingStartedAt: timestamp("processing_started_at"),
+  engineUsed: text("engine_used"),
   createdAt: timestamp("created_at").defaultNow(),
   expiresAt: timestamp("expires_at"),
 });

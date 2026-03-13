@@ -113,39 +113,39 @@ Phased implementation plan for turning the current demo into a real file convers
 
 ### 2.1 Connect Drizzle to PostgreSQL
 
-- [ ] Add `DATABASE_URL` to `.env` and `.env.example`
-- [ ] Create `server/db.ts` that initializes `drizzle(pool)` using `pg` and `DATABASE_URL`
+- [x] Add `DATABASE_URL` to `.env` and `.env.example`
+- [x] Create `server/db.ts` that initializes `drizzle(pool)` using `pg` and `DATABASE_URL`
 - [ ] Run `npm run db:push` to create the `conversions` table (schema already defined in `shared/schema.ts`)
 
 ### 2.2 Implement DrizzleStorage
 
-- [ ] Create `server/storage/drizzle.ts` that implements the existing `IStorage` interface from `server/storage.ts`
-- [ ] Implement all five methods using Drizzle queries against the `conversions` table
-- [ ] Export a `DrizzleStorage` class alongside the existing `MemStorage`
+- [x] Create `server/storage/drizzle.ts` that implements the existing `IStorage` interface from `server/storage.ts`
+- [x] Implement all five methods using Drizzle queries against the `conversions` table
+- [x] Export a `DrizzleStorage` class alongside the existing `MemStorage`
 
 ### 2.3 Swap storage at startup
 
-- [ ] In `server/storage.ts`, check for `DATABASE_URL` at module init:
+- [x] In `server/storage.ts`, check for `DATABASE_URL` at module init:
   - If present, export a `DrizzleStorage` instance
   - If absent, export the existing `MemStorage` instance (keeps dev/test simple)
-- [ ] No changes needed to `server/routes.ts` — it imports `storage` and calls the interface
+- [x] No changes needed to `server/routes.ts` — it imports `storage` and calls the interface
 
 ### 2.4 Job expiry with durable storage
 
-- [ ] Replace the `setTimeout`-based expiry in `server/routes.ts` with a database-driven approach:
+- [x] Replace the `setTimeout`-based expiry in `server/routes.ts` with a database-driven approach:
   - Add a `GET /api/convert/:id` check: if `expiresAt < now`, delete and return 404 (already partially done)
   - Add a cleanup job (see Phase 3) that periodically hard-deletes expired rows and their files
 
 ### 2.5 Add missing fields to schema
 
-- [ ] Add `processingStartedAt: timestamp` to `conversions` table in `shared/schema.ts`
-- [ ] Add `engineUsed: text` to record which converter adapter handled the job
+- [x] Add `processingStartedAt: timestamp` to `conversions` table in `shared/schema.ts`
+- [x] Add `engineUsed: text` to record which converter adapter handled the job
 - [ ] Run migration
 
 ### 2.6 Stuck job recovery on startup
 
-- [ ] On server startup, run: `UPDATE conversions SET status = 'failed', result_message = 'Server restarted during processing.' WHERE status = 'processing' AND processing_started_at < now() - interval '5 minutes'`
-- [ ] This handles jobs that were in-flight when the process was killed — with in-memory storage they disappear on restart, but with PostgreSQL they would remain stuck in `processing` indefinitely without this recovery step
+- [x] On server startup, run: `UPDATE conversions SET status = 'failed', result_message = 'Server restarted during processing.' WHERE status = 'processing' AND processing_started_at < now() - interval '5 minutes'`
+- [x] This handles jobs that were in-flight when the process was killed — with in-memory storage they disappear on restart, but with PostgreSQL they would remain stuck in `processing` indefinitely without this recovery step
 
 ---
 

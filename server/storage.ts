@@ -1,4 +1,6 @@
 import type { Conversion, InsertConversion } from "@shared/schema";
+import { hasDatabaseUrl } from "./db";
+import { DrizzleStorage } from "./storage/drizzle";
 
 export interface IStorage {
   createConversion(conversion: InsertConversion): Promise<Conversion>;
@@ -6,6 +8,8 @@ export interface IStorage {
   getConversionByOutputFilename(outputFilename: string): Promise<Conversion | undefined>;
   updateConversion(id: number, updates: Partial<Conversion>): Promise<Conversion | undefined>;
   getConversionsByVisitor(visitorId: string): Promise<Conversion[]>;
+  getExpiredConversions(now: Date): Promise<Conversion[]>;
+  failStaleProcessingJobs(cutoff: Date, resultMessage: string): Promise<number>;
   deleteConversion(id: number): Promise<void>;
 }
 
@@ -32,6 +36,7 @@ export class MemStorage implements IStorage {
       resultMessage: data.resultMessage ?? null,
       visitorId: data.visitorId,
       processingStartedAt: data.processingStartedAt ?? null,
+      engineUsed: data.engineUsed ?? null,
       createdAt: new Date(),
       expiresAt: data.expiresAt ?? null,
     };
@@ -70,9 +75,36 @@ export class MemStorage implements IStorage {
       .sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0));
   }
 
+  async getExpiredConversions(now: Date): Promise<Conversion[]> {
+    return Array.from(this.conversions.values())
+      .filter((conversion) => conversion.expiresAt !== null && conversion.expiresAt <= now)
+      .sort((a, b) => (a.expiresAt?.getTime() ?? 0) - (b.expiresAt?.getTime() ?? 0));
+  }
+
+  async failStaleProcessingJobs(cutoff: Date, resultMessage: string): Promise<number> {
+    let recoveredCount = 0;
+
+    for (const conversion of Array.from(this.conversions.values())) {
+      if (
+        conversion.status === "processing" &&
+        conversion.processingStartedAt !== null &&
+        conversion.processingStartedAt < cutoff
+      ) {
+        this.conversions.set(conversion.id, {
+          ...conversion,
+          resultMessage,
+          status: "failed",
+        });
+        recoveredCount += 1;
+      }
+    }
+
+    return recoveredCount;
+  }
+
   async deleteConversion(id: number): Promise<void> {
     this.conversions.delete(id);
   }
 }
 
-export const storage = new MemStorage();
+export const storage = hasDatabaseUrl() ? new DrizzleStorage() : new MemStorage();

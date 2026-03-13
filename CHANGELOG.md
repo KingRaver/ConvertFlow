@@ -49,4 +49,31 @@
 - Added `withTimeout` comment documenting that pure-JS work is not cancellable on timeout
 - `docs/ENTERPRISE.md`: corrected 1.5, added xlsx CVE audit item, added registry test to 1.10, added Phase 2.6 stuck job recovery item
 
+## Phase 2 — Durable Job Storage
+
+### Database bootstrap
+- Added `.env` and `.env.example` entries for `DATABASE_URL`; `.env` is now gitignored while `.env.example` remains tracked
+- Added `server/db.ts` to initialize `pg` + Drizzle when `DATABASE_URL` is configured
+- `drizzle.config.ts` now loads `.env` before resolving `DATABASE_URL`
+
+### Storage and lifecycle
+- Added `server/storage/drizzle.ts` with a full `DrizzleStorage` implementation of the app storage contract
+- `server/storage.ts` now selects `DrizzleStorage` when `DATABASE_URL` is present and falls back to `MemStorage` otherwise
+- Extended storage support for expired-job queries and stale-processing recovery
+- Added `engineUsed` to `shared/schema.ts` and persisted the selected converter engine on each job
+
+### Maintenance
+- Replaced per-job `setTimeout` expiry scheduling in `server/routes.ts` with expiry checks backed by durable storage
+- Added `server/maintenance.ts` for startup recovery of stuck processing jobs and periodic cleanup of expired rows/files
+- `server/index.ts` now runs startup maintenance before serving traffic and starts the recurring cleanup worker
+
+### Tests
+- Added `tests/maintenance.test.ts` for expired cleanup and stale-job recovery behavior
+- Updated route coverage to assert `engineUsed` is exposed on completed jobs
+
+### Patch — post-review fixes
+- `DrizzleStorage.getExpiredConversions`: fixed sort order from `desc` to `asc` to match `MemStorage` behavior (oldest expiry processed first)
+- Railway PostgreSQL provisioned as production database; `conversions` table created via `db:push` against public TCP proxy (`shuttle.proxy.rlwy.net`)
+- Confirmed Phase 2 fully integrated end-to-end
+
 ---

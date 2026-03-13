@@ -1,7 +1,6 @@
 import { Link } from "wouter";
 import { ArrowLeftRight } from "lucide-react";
 import { POPULAR_CONVERSIONS } from "@shared/schema";
-import { PerplexityAttribution } from "./PerplexityAttribution";
 
 export default function Footer() {
   return (
@@ -56,11 +55,10 @@ export default function Footer() {
           </div>
         </div>
 
-        <div className="mt-8 pt-6 border-t border-border/60 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p className="text-xs text-muted-foreground">
-            &copy; {new Date().getFullYear()} ConvertFlow. Temporary uploads and completed outputs expire automatically.
+        <div className="mt-8 pt-6 border-t border-border/60 flex justify-center">
+          <p className="text-xs text-muted-foreground text-center">
+            &copy; {new Date().getFullYear()} ConvertFlow. All rights reserved.
           </p>
-          <PerplexityAttribution />
         </div>
       </div>
     </footer>
