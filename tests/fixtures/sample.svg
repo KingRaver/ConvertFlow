@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80">
+  <rect width="120" height="80" fill="#1f6feb" rx="12" />
+  <circle cx="34" cy="40" r="18" fill="#f4d03f" />
+  <text x="60" y="46" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#ffffff">
+    CF
+  </text>
+</svg>
