@@ -24,6 +24,13 @@ export async function cleanupExpiredConversions(
   return expiredConversions.length;
 }
 
+export async function cleanupExpiredIdempotencyKeys(
+  activeStorage: IStorage = storage,
+  now = new Date(),
+) {
+  return activeStorage.deleteExpiredIdempotencyKeys(now);
+}
+
 export async function recoverStuckProcessingJobs(
   activeStorage: IStorage = storage,
   now = new Date(),
@@ -34,15 +41,16 @@ export async function recoverStuckProcessingJobs(
 
 async function runCleanupPass(activeStorage: IStorage = storage, now = new Date()) {
   const cleaned = await cleanupExpiredConversions(activeStorage, now);
+  const idempotencyCleaned = await cleanupExpiredIdempotencyKeys(activeStorage, now);
   sweepDirectory(UPLOAD_TMP_DIR);
-  return cleaned;
+  return { cleaned, idempotencyCleaned };
 }
 
 export async function runStartupMaintenance(activeStorage: IStorage = storage, now = new Date()) {
   ensureWorkingDirectories();
 
   const recovered = await recoverStuckProcessingJobs(activeStorage, now);
-  const cleaned = await runCleanupPass(activeStorage, now);
+  const { cleaned, idempotencyCleaned } = await runCleanupPass(activeStorage, now);
 
-  return { cleaned, recovered };
+  return { cleaned, idempotencyCleaned, recovered };
 }

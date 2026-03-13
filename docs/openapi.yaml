@@ -1,0 +1,552 @@
+openapi: 3.1.0
+info:
+  title: ConvertFlow Public API
+  version: 1.0.0
+  description: |
+    ConvertFlow exposes authentication, conversion, download, API key, and webhook endpoints.
+    Authenticate with `Authorization: Bearer <session-token>` for account endpoints or
+    `Authorization: Bearer cf_<api-key>` for programmable conversion access.
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+  - name: Conversions
+  - name: API Keys
+  - name: Webhooks
+  - name: Docs
+paths:
+  /api/formats:
+    get:
+      tags: [Conversions]
+      summary: List supported conversion routes
+      security: []
+      responses:
+        "200":
+          description: Supported source-to-target mappings
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    type: string
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthCredentials"
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthCredentials"
+      responses:
+        "200":
+          description: Authenticated session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the current session token
+      responses:
+        "204":
+          description: Logged out
+        "401":
+          $ref: "#/components/responses/Error"
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Return the current account
+      responses:
+        "200":
+          description: Account profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Error"
+  /api/keys:
+    get:
+      tags: [API Keys]
+      summary: List API keys for the authenticated account
+      responses:
+        "200":
+          description: API keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApiKey"
+                required: [items]
+        "401":
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [API Keys]
+      summary: Create an API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: CI pipeline
+              required: [name]
+      responses:
+        "201":
+          description: API key created. The raw token is shown only once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey:
+                    $ref: "#/components/schemas/ApiKey"
+                  token:
+                    type: string
+                    example: cf_2UU0wWLi0eV5K0Qzv0qscf2N8QfG2S6LxT0Hj9YlA0o
+                required: [apiKey, token]
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+  /api/keys/{id}:
+    delete:
+      tags: [API Keys]
+      summary: Revoke an API key
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: API key revoked
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/webhooks:
+    post:
+      tags: [Webhooks]
+      summary: Register a conversion webhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  example: https://example.com/webhooks/convertflow
+                events:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/WebhookEvent"
+                secret:
+                  type: string
+                  description: Optional custom signing secret. If omitted, ConvertFlow generates one.
+              required: [url]
+      responses:
+        "201":
+          description: Webhook created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhook:
+                    $ref: "#/components/schemas/Webhook"
+                  secret:
+                    type: string
+                required: [webhook, secret]
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+  /api/webhooks/{id}:
+    delete:
+      tags: [Webhooks]
+      summary: Delete a webhook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Webhook deleted
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/convert:
+    post:
+      tags: [Conversions]
+      summary: Create a conversion job
+      description: |
+        Accepts either a session token, an API key (`Bearer cf_<key>`), or a visitor id header for anonymous usage.
+        When `Idempotency-Key` is reused with the same request body within 24 hours, the original `201` response is returned.
+      security:
+        - bearerAuth: []
+        - visitorIdHeader: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                targetFormat:
+                  type: string
+              required: [file, targetFormat]
+      responses:
+        "201":
+          description: Conversion job accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Conversion"
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
+        "429":
+          $ref: "#/components/responses/Error"
+  /api/convert/{id}:
+    get:
+      tags: [Conversions]
+      summary: Get a conversion job
+      security:
+        - bearerAuth: []
+        - visitorIdHeader: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Conversion job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Conversion"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/conversions:
+    get:
+      tags: [Conversions]
+      summary: List conversion jobs
+      security:
+        - bearerAuth: []
+        - visitorIdHeader: []
+      parameters:
+        - name: format
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, processing, completed, failed]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+      responses:
+        "200":
+          description: Paginated conversions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Conversion"
+                  limit:
+                    type: integer
+                  page:
+                    type: integer
+                  total:
+                    type: integer
+                  totalPages:
+                    type: integer
+                required: [items, limit, page, total, totalPages]
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/download/{filename}:
+    get:
+      tags: [Conversions]
+      summary: Get a signed download redirect for a completed conversion
+      security:
+        - bearerAuth: []
+        - visitorIdHeader: []
+      parameters:
+        - name: filename
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to the active download URL
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /api/openapi.yaml:
+    get:
+      tags: [Docs]
+      summary: Return the raw OpenAPI document
+      security: []
+      responses:
+        "200":
+          description: OpenAPI YAML
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /api/docs:
+    get:
+      tags: [Docs]
+      summary: Render the API reference UI
+      security: []
+      responses:
+        "200":
+          description: Redoc HTML
+          content:
+            text/html:
+              schema:
+                type: string
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token
+      description: Session token or API key with the `cf_` prefix.
+    visitorIdHeader:
+      type: apiKey
+      in: header
+      name: X-Visitor-Id
+      description: Required for anonymous conversion and download access.
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    AuthCredentials:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+      required: [email, password]
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/User"
+      required: [token, user]
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        plan:
+          type: string
+          enum: [free, pro, business]
+        role:
+          type: string
+          enum: [user, admin]
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+      required: [id, email, plan, role, createdAt]
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+    ApiKey:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+      required: [id, name, lastUsedAt, createdAt, revokedAt]
+    WebhookEvent:
+      type: string
+      enum: [conversion.completed, conversion.failed]
+    Webhook:
+      type: object
+      properties:
+        id:
+          type: integer
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEvent"
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+      required: [id, url, events, createdAt]
+    Conversion:
+      type: object
+      properties:
+        id:
+          type: integer
+        originalName:
+          type: string
+        originalFormat:
+          type: string
+        targetFormat:
+          type: string
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+        fileSize:
+          type: integer
+        convertedSize:
+          type: integer
+          nullable: true
+        outputFilename:
+          type: string
+          nullable: true
+        resultMessage:
+          type: string
+          nullable: true
+        engineUsed:
+          type: string
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+        processingStartedAt:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+        - id
+        - originalName
+        - originalFormat
+        - targetFormat
+        - status
+        - fileSize
+        - convertedSize
+        - outputFilename
+        - resultMessage
+        - engineUsed
+        - expiresAt
+        - createdAt
+        - processingStartedAt

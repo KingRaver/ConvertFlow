@@ -312,39 +312,39 @@ Phased implementation plan for turning the current demo into a real file convers
 
 ### 7.1 API key schema
 
-- [ ] Add `apiKeys` table: `id`, `userId`, `keyHash`, `name`, `lastUsedAt`, `createdAt`, `revokedAt`
-- [ ] Store only the hash; show the raw key once at creation time
+- [x] Add `apiKeys` table: `id`, `userId`, `keyHash`, `name`, `lastUsedAt`, `createdAt`, `revokedAt`
+- [x] Store only the hash; show the raw key once at creation time
 
 ### 7.2 API key management endpoints
 
-- [ ] `GET /api/keys` — list user's API keys (names and last used, never raw keys)
-- [ ] `POST /api/keys` — generate a new key, return raw value once
-- [ ] `DELETE /api/keys/:id` — revoke a key
+- [x] `GET /api/keys` — list user's API keys (names and last used, never raw keys)
+- [x] `POST /api/keys` — generate a new key, return raw value once
+- [x] `DELETE /api/keys/:id` — revoke a key
 
 ### 7.3 API key authentication middleware
 
-- [ ] Update `server/middleware/auth.ts` to also accept `Authorization: Bearer cf_<key>` format
-- [ ] Look up key by hash; attach user; record `lastUsedAt`
-- [ ] Apply to all `/api/convert`, `/api/download`, `/api/conversions` routes
+- [x] Update `server/middleware/auth.ts` to also accept `Authorization: Bearer cf_<key>` format
+- [x] Look up key by hash; attach user; record `lastUsedAt`
+- [x] Apply to all `/api/convert`, `/api/download`, `/api/conversions` routes
 
 ### 7.4 Webhook support
 
-- [ ] Add `webhooks` table: `id`, `userId`, `url`, `events` (array), `secret`, `createdAt`
-- [ ] `POST /api/webhooks` — register a webhook URL
-- [ ] `DELETE /api/webhooks/:id` — remove a webhook
-- [ ] On job completion or failure: POST to registered webhook URLs with `{ event: "conversion.completed", job: {...} }` signed with HMAC
-- [ ] Use a retry queue for failed webhook deliveries (3 retries with backoff)
+- [x] Add `webhooks` table: `id`, `userId`, `url`, `events` (array), `secret`, `createdAt`
+- [x] `POST /api/webhooks` — register a webhook URL
+- [x] `DELETE /api/webhooks/:id` — remove a webhook
+- [x] On job completion or failure: POST to registered webhook URLs with `{ event: "conversion.completed", job: {...} }` signed with HMAC
+- [x] Use a retry queue for failed webhook deliveries (3 retries with backoff)
 
 ### 7.5 Idempotency
 
-- [ ] Accept `Idempotency-Key` header on `POST /api/convert`
-- [ ] Store idempotency keys in a short-lived table (24h TTL)
-- [ ] If same key is reused, return the original response without re-processing
+- [x] Accept `Idempotency-Key` header on `POST /api/convert`
+- [x] Store idempotency keys in a short-lived table (24h TTL)
+- [x] If same key is reused, return the original response without re-processing
 
 ### 7.6 OpenAPI spec
 
-- [ ] Create `docs/openapi.yaml` documenting all public endpoints
-- [ ] Add `GET /api/docs` that serves Swagger UI or Redoc
+- [x] Create `docs/openapi.yaml` documenting all public endpoints
+- [x] Add `GET /api/docs` that serves Swagger UI or Redoc
 
 ---
 

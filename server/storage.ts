@@ -1,14 +1,21 @@
 import type {
+  ApiKey,
   Conversion,
   ConversionStatus,
+  IdempotencyKey,
+  InsertApiKey,
   InsertConversion,
+  InsertIdempotencyKey,
   InsertSession,
   InsertUser,
   InsertUsageEvent,
+  InsertWebhook,
   Session,
   User,
   UsageEvent,
   UsageEventType,
+  Webhook,
+  WebhookEventType,
 } from "@shared/schema";
 import { hasDatabaseUrl } from "./db";
 import { DrizzleStorage } from "./storage/drizzle";
@@ -29,6 +36,10 @@ export interface PaginatedConversions {
   total: number;
 }
 
+export type IdempotencyScope =
+  | { userId: number; visitorId?: never }
+  | { userId?: never; visitorId: string };
+
 export interface IStorage {
   createConversion(conversion: InsertConversion): Promise<Conversion>;
   getConversion(id: number): Promise<Conversion | undefined>;
@@ -46,6 +57,18 @@ export interface IStorage {
   createSession(session: InsertSession): Promise<Session>;
   getSessionByToken(token: string): Promise<Session | undefined>;
   deleteSessionByToken(token: string): Promise<void>;
+  listApiKeys(userId: number): Promise<ApiKey[]>;
+  createApiKey(apiKey: InsertApiKey): Promise<ApiKey>;
+  getActiveApiKeyByHash(keyHash: string): Promise<ApiKey | undefined>;
+  touchApiKeyLastUsed(id: number, lastUsedAt: Date): Promise<void>;
+  revokeApiKey(id: number, userId: number, revokedAt?: Date): Promise<boolean>;
+  createWebhook(webhook: InsertWebhook): Promise<Webhook>;
+  getWebhook(id: number): Promise<Webhook | undefined>;
+  listWebhooksForEvent(userId: number, event: WebhookEventType): Promise<Webhook[]>;
+  deleteWebhook(id: number, userId: number): Promise<boolean>;
+  createIdempotencyKey(key: InsertIdempotencyKey): Promise<IdempotencyKey>;
+  getIdempotencyKey(keyHash: string, scope: IdempotencyScope, now?: Date): Promise<IdempotencyKey | undefined>;
+  deleteExpiredIdempotencyKeys(now: Date): Promise<number>;
   createUsageEvent(event: InsertUsageEvent): Promise<UsageEvent>;
   countUsageEventsSince(userId: number, eventType: UsageEventType, since: Date): Promise<number>;
   countVisitorConversionsSince(visitorId: string, since: Date): Promise<number>;
@@ -60,25 +83,45 @@ function sortConversionsByNewest(left: Conversion, right: Conversion) {
   return right.id - left.id;
 }
 
+function matchesIdempotencyScope(record: IdempotencyKey, scope: IdempotencyScope) {
+  if ("userId" in scope) {
+    return record.userId === scope.userId;
+  }
+
+  return record.userId === null && record.visitorId === scope.visitorId;
+}
+
 export class MemStorage implements IStorage {
+  private apiKeys: Map<number, ApiKey>;
   private conversions: Map<number, Conversion>;
+  private idempotencyKeys: Map<number, IdempotencyKey>;
+  private nextApiKeyId: number;
   private nextConversionId: number;
+  private nextIdempotencyKeyId: number;
   private nextSessionId: number;
   private nextUserId: number;
   private nextUsageEventId: number;
+  private nextWebhookId: number;
   private sessions: Map<number, Session>;
   private usageEvents: Map<number, UsageEvent>;
   private users: Map<number, User>;
+  private webhooks: Map<number, Webhook>;
 
   constructor() {
+    this.apiKeys = new Map();
     this.conversions = new Map();
+    this.idempotencyKeys = new Map();
     this.users = new Map();
     this.sessions = new Map();
     this.usageEvents = new Map();
+    this.webhooks = new Map();
+    this.nextApiKeyId = 1;
     this.nextConversionId = 1;
+    this.nextIdempotencyKeyId = 1;
     this.nextUserId = 1;
     this.nextSessionId = 1;
     this.nextUsageEventId = 1;
+    this.nextWebhookId = 1;
   }
 
   async createConversion(data: InsertConversion): Promise<Conversion> {
@@ -276,6 +319,163 @@ export class MemStorage implements IStorage {
     }
 
     this.sessions.delete(existing[0]);
+  }
+
+  async listApiKeys(userId: number): Promise<ApiKey[]> {
+    return Array.from(this.apiKeys.values())
+      .filter((apiKey) => apiKey.userId === userId)
+      .sort((left, right) => {
+        const createdDelta = (right.createdAt?.getTime() ?? 0) - (left.createdAt?.getTime() ?? 0);
+        if (createdDelta !== 0) {
+          return createdDelta;
+        }
+
+        return right.id - left.id;
+      });
+  }
+
+  async createApiKey(data: InsertApiKey): Promise<ApiKey> {
+    const id = this.nextApiKeyId++;
+    const apiKey: ApiKey = {
+      id,
+      userId: data.userId,
+      keyHash: data.keyHash,
+      name: data.name,
+      lastUsedAt: data.lastUsedAt ?? null,
+      createdAt: new Date(),
+      revokedAt: data.revokedAt ?? null,
+    };
+
+    this.apiKeys.set(id, apiKey);
+    return apiKey;
+  }
+
+  async getActiveApiKeyByHash(keyHash: string): Promise<ApiKey | undefined> {
+    return Array.from(this.apiKeys.values()).find((apiKey) => (
+      apiKey.keyHash === keyHash &&
+      apiKey.revokedAt === null
+    ));
+  }
+
+  async touchApiKeyLastUsed(id: number, lastUsedAt: Date): Promise<void> {
+    const apiKey = this.apiKeys.get(id);
+    if (!apiKey) {
+      return;
+    }
+
+    this.apiKeys.set(id, {
+      ...apiKey,
+      lastUsedAt,
+    });
+  }
+
+  async revokeApiKey(id: number, userId: number, revokedAt = new Date()): Promise<boolean> {
+    const apiKey = this.apiKeys.get(id);
+    if (!apiKey || apiKey.userId !== userId || apiKey.revokedAt !== null) {
+      return false;
+    }
+
+    this.apiKeys.set(id, {
+      ...apiKey,
+      revokedAt,
+    });
+
+    return true;
+  }
+
+  async createWebhook(data: InsertWebhook): Promise<Webhook> {
+    const id = this.nextWebhookId++;
+    const webhook: Webhook = {
+      id,
+      userId: data.userId,
+      url: data.url,
+      events: [...data.events],
+      secret: data.secret,
+      createdAt: new Date(),
+    };
+
+    this.webhooks.set(id, webhook);
+    return webhook;
+  }
+
+  async getWebhook(id: number): Promise<Webhook | undefined> {
+    return this.webhooks.get(id);
+  }
+
+  async listWebhooksForEvent(userId: number, event: WebhookEventType): Promise<Webhook[]> {
+    return Array.from(this.webhooks.values())
+      .filter((webhook) => webhook.userId === userId && webhook.events.includes(event))
+      .sort((left, right) => {
+        const createdDelta = (left.createdAt?.getTime() ?? 0) - (right.createdAt?.getTime() ?? 0);
+        if (createdDelta !== 0) {
+          return createdDelta;
+        }
+
+        return left.id - right.id;
+      });
+  }
+
+  async deleteWebhook(id: number, userId: number): Promise<boolean> {
+    const webhook = this.webhooks.get(id);
+    if (!webhook || webhook.userId !== userId) {
+      return false;
+    }
+
+    this.webhooks.delete(id);
+    return true;
+  }
+
+  async createIdempotencyKey(data: InsertIdempotencyKey): Promise<IdempotencyKey> {
+    const id = this.nextIdempotencyKeyId++;
+    const key: IdempotencyKey = {
+      id,
+      keyHash: data.keyHash,
+      requestHash: data.requestHash,
+      responseStatus: data.responseStatus,
+      responseBody: data.responseBody,
+      userId: data.userId ?? null,
+      visitorId: data.visitorId ?? null,
+      conversionId: data.conversionId ?? null,
+      createdAt: new Date(),
+      expiresAt: data.expiresAt,
+    };
+
+    this.idempotencyKeys.set(id, key);
+    return key;
+  }
+
+  async getIdempotencyKey(
+    keyHash: string,
+    scope: IdempotencyScope,
+    now = new Date(),
+  ): Promise<IdempotencyKey | undefined> {
+    for (const [id, record] of Array.from(this.idempotencyKeys.entries())) {
+      if (record.expiresAt.getTime() <= now.getTime()) {
+        this.idempotencyKeys.delete(id);
+        continue;
+      }
+
+      if (record.keyHash === keyHash && matchesIdempotencyScope(record, scope)) {
+        return record;
+      }
+    }
+
+    return undefined;
+  }
+
+  async deleteExpiredIdempotencyKeys(now: Date): Promise<number> {
+    let deleted = 0;
+
+    for (const [id, record] of Array.from(this.idempotencyKeys.entries())) {
+      if (record.expiresAt.getTime() > now.getTime()) {
+        continue;
+      }
+
+      this.idempotencyKeys.delete(id);
+      deleted += 1;
+    }
+
+    return deleted;
   }
 
   async createUsageEvent(data: InsertUsageEvent): Promise<UsageEvent> {

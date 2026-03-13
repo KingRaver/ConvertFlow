@@ -8,6 +8,8 @@ export const USER_PLANS = ["free", "pro", "business"] as const;
 export type UserPlan = typeof USER_PLANS[number];
 export const USAGE_EVENT_TYPES = ["conversion"] as const;
 export type UsageEventType = typeof USAGE_EVENT_TYPES[number];
+export const WEBHOOK_EVENT_TYPES = ["conversion.completed", "conversion.failed"] as const;
+export type WebhookEventType = typeof WEBHOOK_EVENT_TYPES[number];
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -39,6 +41,42 @@ export const usageEvents = pgTable("usage_events", {
   format: text("format").notNull(),
   fileSize: integer("file_size").notNull(),
   createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const apiKeys = pgTable("api_keys", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  keyHash: text("key_hash").notNull().unique(),
+  name: text("name").notNull(),
+  lastUsedAt: timestamp("last_used_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  revokedAt: timestamp("revoked_at"),
+});
+
+export const webhooks = pgTable("webhooks", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  url: text("url").notNull(),
+  events: text("events").array().notNull(),
+  secret: text("secret").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const idempotencyKeys = pgTable("idempotency_keys", {
+  id: serial("id").primaryKey(),
+  keyHash: text("key_hash").notNull(),
+  requestHash: text("request_hash").notNull(),
+  responseStatus: integer("response_status").notNull(),
+  responseBody: text("response_body").notNull(),
+  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
+  visitorId: text("visitor_id"),
+  conversionId: integer("conversion_id").references(() => conversions.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow(),
+  expiresAt: timestamp("expires_at").notNull(),
 });
 
 export const conversions = pgTable("conversions", {
@@ -75,15 +113,33 @@ export const insertUsageEventSchema = createInsertSchema(usageEvents).omit({
   id: true,
   createdAt: true,
 });
+export const insertApiKeySchema = createInsertSchema(apiKeys).omit({
+  id: true,
+  createdAt: true,
+});
+export const insertWebhookSchema = createInsertSchema(webhooks).omit({
+  id: true,
+  createdAt: true,
+});
+export const insertIdempotencyKeySchema = createInsertSchema(idempotencyKeys).omit({
+  id: true,
+  createdAt: true,
+});
 
 export type InsertConversion = z.infer<typeof insertConversionSchema>;
 export type InsertSession = z.infer<typeof insertSessionSchema>;
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type InsertUsageEvent = z.infer<typeof insertUsageEventSchema>;
+export type InsertApiKey = z.infer<typeof insertApiKeySchema>;
+export type InsertWebhook = z.infer<typeof insertWebhookSchema>;
+export type InsertIdempotencyKey = z.infer<typeof insertIdempotencyKeySchema>;
 export type Conversion = typeof conversions.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type UsageEvent = typeof usageEvents.$inferSelect;
+export type ApiKey = typeof apiKeys.$inferSelect;
+export type Webhook = typeof webhooks.$inferSelect;
+export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
 
 export const CONVERSION_STATUSES = ["pending", "processing", "completed", "failed"] as const;
 export type ConversionStatus = typeof CONVERSION_STATUSES[number];

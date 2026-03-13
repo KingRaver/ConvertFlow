@@ -1,6 +1,7 @@
 import type { Server } from "node:http";
 import process from "node:process";
 import { PgBoss, type QueueOptions } from "pg-boss";
+import type { Conversion, WebhookEventType } from "@shared/schema";
 import type { ConverterFamily } from "./converters";
 import { registry } from "./converters/registry";
 import { CONVERTER_TIMEOUT_MS } from "./converters/runtime";
@@ -13,6 +14,8 @@ import {
 import { databaseUrl } from "./db";
 import { ensureWorkingDirectories } from "./files";
 import { cleanupExpiredConversions } from "./maintenance";
+import { storage } from "./storage";
+import { type WebhookDeliveryPayload, processWebhookDelivery } from "./webhooks";
 
 const QUEUE_JOB_TIMEOUT_SECONDS = Math.ceil(CONVERTER_TIMEOUT_MS / 1000);
 const EXPIRY_SWEEP_INTERVAL_CRON = "*/10 * * * *";
@@ -37,11 +40,13 @@ const CONVERSION_QUEUE_NAMES: Record<ConverterFamily, string> = {
 
 const EXPIRY_QUEUE_NAME = "conversion-expiry";
 const EXPIRY_SWEEP_QUEUE_NAME = "conversion-expiry-sweep";
+const WEBHOOK_QUEUE_NAME = "webhook-delivery";
 
 type QueueJobName =
   | (typeof CONVERSION_QUEUE_NAMES)[ConverterFamily]
   | typeof EXPIRY_QUEUE_NAME
-  | typeof EXPIRY_SWEEP_QUEUE_NAME;
+  | typeof EXPIRY_SWEEP_QUEUE_NAME
+  | typeof WEBHOOK_QUEUE_NAME;
 
 interface QueueSendOptions {
   id?: string;
@@ -59,6 +64,7 @@ interface QueueRuntime {
   startWorker(options: QueueStartOptions): Promise<void>;
   enqueueConversionJob(payload: ConversionJobPayload): Promise<void>;
   scheduleExpiryJob(payload: ExpiryJobPayload, runAt: Date): Promise<void>;
+  scheduleWebhookDeliveryJob(payload: WebhookDeliveryPayload, runAt?: Date): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -72,6 +78,23 @@ function getQueueNameForConversion(payload: ConversionJobPayload) {
   return getQueueNameForFamily(
     registry.getAdapter(payload.sourceFormat, payload.targetFormat).family,
   );
+}
+
+async function enqueueWebhookJobsForConversion(
+  conversion: Conversion,
+  event: WebhookEventType,
+) {
+  if (conversion.userId === null) {
+    return;
+  }
+
+  const matchingWebhooks = await storage.listWebhooksForEvent(conversion.userId, event);
+  await Promise.all(matchingWebhooks.map((webhook) => queueRuntime.scheduleWebhookDeliveryJob({
+    attempt: 0,
+    conversionId: conversion.id,
+    event,
+    webhookId: webhook.id,
+  })));
 }
 
 function defaultQueueErrorHandler(error: unknown) {
@@ -129,6 +152,13 @@ class MemoryQueueRuntime implements QueueRuntime {
     });
   }
 
+  async scheduleWebhookDeliveryJob(payload: WebhookDeliveryPayload, runAt?: Date) {
+    this.enqueue(WEBHOOK_QUEUE_NAME, payload, {
+      id: `webhook-delivery-${payload.webhookId}-${payload.conversionId}-${payload.event}-${payload.attempt}`,
+      startAfter: runAt,
+    });
+  }
+
   async stop() {
     if (this.expirySweepTimer) {
       clearInterval(this.expirySweepTimer);
@@ -153,7 +183,11 @@ class MemoryQueueRuntime implements QueueRuntime {
     for (const [family, concurrency] of Object.entries(FAMILY_CONCURRENCY) as Array<
       [ConverterFamily, number]
     >) {
-      this.registerWorker(getQueueNameForFamily(family), concurrency, processQueuedConversion);
+      this.registerWorker(getQueueNameForFamily(family), concurrency, async (payload: ConversionJobPayload) => {
+        await processQueuedConversion(payload, {
+          onSettled: enqueueWebhookJobsForConversion,
+        });
+      });
     }
 
     this.registerWorker(EXPIRY_QUEUE_NAME, 1, async (payload: ExpiryJobPayload) => {
@@ -161,6 +195,17 @@ class MemoryQueueRuntime implements QueueRuntime {
     });
     this.registerWorker(EXPIRY_SWEEP_QUEUE_NAME, 1, async () => {
       await cleanupExpiredConversions();
+    });
+    this.registerWorker(WEBHOOK_QUEUE_NAME, 4, async (payload: WebhookDeliveryPayload) => {
+      const result = await processWebhookDelivery(payload);
+      if (!result.retryAt) {
+        return;
+      }
+
+      await this.scheduleWebhookDeliveryJob({
+        ...payload,
+        attempt: payload.attempt + 1,
+      }, result.retryAt);
     });
 
     this.workersStarted = true;
@@ -302,6 +347,17 @@ class PgBossQueueRuntime implements QueueRuntime {
     });
   }
 
+  async scheduleWebhookDeliveryJob(payload: WebhookDeliveryPayload, runAt?: Date) {
+    const boss = await this.ensureBoss();
+
+    await boss.send(WEBHOOK_QUEUE_NAME, payload, {
+      expireInSeconds: QUEUE_JOB_TIMEOUT_SECONDS,
+      id: `webhook-delivery-${payload.webhookId}-${payload.conversionId}-${payload.event}-${payload.attempt}`,
+      retryLimit: 0,
+      startAfter: runAt,
+    });
+  }
+
   async stop() {
     const boss = this.boss;
 
@@ -365,6 +421,7 @@ class PgBossQueueRuntime implements QueueRuntime {
       ...Object.values(CONVERSION_QUEUE_NAMES),
       EXPIRY_QUEUE_NAME,
       EXPIRY_SWEEP_QUEUE_NAME,
+      WEBHOOK_QUEUE_NAME,
     ];
 
     for (const queueName of queueEntries) {
@@ -418,7 +475,9 @@ class PgBossQueueRuntime implements QueueRuntime {
           pollingIntervalSeconds: 1,
         },
         async (jobs) => {
-          await Promise.all(jobs.map((job) => processQueuedConversion(job.data)));
+          await Promise.all(jobs.map((job) => processQueuedConversion(job.data, {
+            onSettled: enqueueWebhookJobsForConversion,
+          })));
         },
       );
     }
@@ -448,6 +507,28 @@ class PgBossQueueRuntime implements QueueRuntime {
         }
 
         await cleanupExpiredConversions();
+      },
+    );
+
+    await boss.work<WebhookDeliveryPayload>(
+      WEBHOOK_QUEUE_NAME,
+      {
+        batchSize: 1,
+        localConcurrency: 4,
+        pollingIntervalSeconds: 1,
+      },
+      async (jobs) => {
+        await Promise.all(jobs.map(async (job) => {
+          const result = await processWebhookDelivery(job.data);
+          if (!result.retryAt) {
+            return;
+          }
+
+          await this.scheduleWebhookDeliveryJob({
+            ...job.data,
+            attempt: job.data.attempt + 1,
+          }, result.retryAt);
+        }));
       },
     );
 
@@ -506,4 +587,11 @@ export async function scheduleConversionExpiryJob(
   runAt: Date,
 ) {
   await queueRuntime.scheduleExpiryJob(payload, runAt);
+}
+
+export async function scheduleWebhookDeliveryJob(
+  payload: WebhookDeliveryPayload,
+  runAt?: Date,
+) {
+  await queueRuntime.scheduleWebhookDeliveryJob(payload, runAt);
 }

@@ -1,5 +1,7 @@
 import type { Express, NextFunction, Request, Response } from "express";
 import type { Server } from "http";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
 import multer from "multer";
 import path from "path";
 import { z } from "zod";
@@ -11,11 +13,14 @@ import {
   SUPPORTED_CONVERSIONS,
   SUPPORTED_FORMATS,
   type UserPlan,
+  WEBHOOK_EVENT_TYPES,
 } from "@shared/schema";
 import { VISITOR_ID_HEADER, isValidVisitorId } from "@shared/visitor";
 import {
+  createApiKeyToken,
   createSessionExpiry,
   createSessionToken,
+  hashSecret,
   hashPassword,
   MIN_PASSWORD_LENGTH,
   normalizeEmail,
@@ -50,7 +55,7 @@ import {
   getPlanRetentionDeadline,
   getStartOfCurrentUtcDay,
 } from "./limits";
-import { optionalAuth, requireAuth } from "./middleware/auth";
+import { optionalApiAuth, requireAuth } from "./middleware/auth";
 import { createRateLimiter } from "./middleware/rateLimit";
 import {
   enqueueConversionJob,
@@ -58,6 +63,7 @@ import {
   startQueueServerRuntime,
 } from "./queue";
 import { storage } from "./storage";
+import { createWebhookSecret, serializeWebhook } from "./webhooks";
 
 const authCredentialsSchema = z.object({
   email: z.string().trim().email("A valid email address is required.").transform(normalizeEmail),
@@ -84,6 +90,65 @@ const BILLING_CHECKOUT_PLANS = ["pro", "business"] as const;
 const billingCheckoutSchema = z.object({
   plan: z.enum(BILLING_CHECKOUT_PLANS),
 });
+
+const apiKeyCreateSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, "API key name is required.")
+    .max(100, "API key name must be 100 characters or fewer."),
+});
+
+function isPrivateUrl(urlString: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(urlString).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
+  if (hostname === "::1" || hostname === "[::1]") return true;
+
+  const parts = hostname.split(".").map(Number);
+  if (parts.length === 4 && parts.every((n) => !Number.isNaN(n) && n >= 0 && n <= 255)) {
+    const [a, b] = parts as [number, number, number, number];
+    if (a === 0) return true;                                    // 0.0.0.0/8
+    if (a === 10) return true;                                   // 10.0.0.0/8
+    if (a === 127) return true;                                  // 127.0.0.0/8
+    if (a === 169 && b === 254) return true;                     // 169.254.0.0/16 link-local
+    if (a === 172 && b >= 16 && b <= 31) return true;           // 172.16.0.0/12
+    if (a === 192 && b === 168) return true;                     // 192.168.0.0/16
+  }
+
+  return false;
+}
+
+const webhookCreateSchema = z.object({
+  events: z.array(z.enum(WEBHOOK_EVENT_TYPES)).min(1).default([...WEBHOOK_EVENT_TYPES]),
+  secret: z
+    .string()
+    .trim()
+    .min(32, "Custom webhook secret must be at least 32 characters.")
+    .max(200, "Webhook secret must be 200 characters or fewer.")
+    .optional(),
+  url: z
+    .string()
+    .trim()
+    .url("Webhook URL must be a valid URL.")
+    .refine((value) => value.startsWith("http://") || value.startsWith("https://"), {
+      message: "Webhook URL must use http or https.",
+    })
+    .refine((value) => !isPrivateUrl(value), {
+      message: "Webhook URL must not point to a private or internal address.",
+    }),
+});
+
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+const OPENAPI_SPEC_PATHS = [
+  path.resolve(process.cwd(), "docs/openapi.yaml"),
+  path.resolve(process.cwd(), "dist/docs/openapi.yaml"),
+];
 
 type ConversionOwner =
   | { scope: "user"; userId: number }
@@ -138,6 +203,39 @@ function serializeUser(user: {
     role: user.role,
     createdAt: user.createdAt?.toISOString() ?? null,
   };
+}
+
+function serializeApiKey(apiKey: {
+  createdAt: Date | null;
+  id: number;
+  lastUsedAt: Date | null;
+  name: string;
+  revokedAt: Date | null;
+}) {
+  return {
+    id: apiKey.id,
+    name: apiKey.name,
+    lastUsedAt: apiKey.lastUsedAt?.toISOString() ?? null,
+    createdAt: apiKey.createdAt?.toISOString() ?? null,
+    revokedAt: apiKey.revokedAt?.toISOString() ?? null,
+  };
+}
+
+async function hashFileContents(filePath: string) {
+  return new Promise<string>((resolve, reject) => {
+    const hash = createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+
+    stream.on("data", (chunk) => {
+      hash.update(chunk);
+    });
+    stream.on("end", () => {
+      resolve(hash.digest("hex"));
+    });
+    stream.on("error", (error) => {
+      reject(error);
+    });
+  });
 }
 
 function getOptionalVisitorId(req: Request): string | null {
@@ -270,6 +368,42 @@ function getRequestBaseUrl(req: Request) {
   return `${protocol}://${host}`;
 }
 
+function buildIdempotencyScope(owner: { userId: number | null; visitorId: string | null }) {
+  if (owner.userId !== null) {
+    return { userId: owner.userId } as const;
+  }
+
+  return { visitorId: owner.visitorId! } as const;
+}
+
+function buildIdempotencyRequestHash(input: {
+  fileHash: string;
+  fileSize: number;
+  sourceFormat: string;
+  targetFormat: string;
+}) {
+  return hashSecret(JSON.stringify(input));
+}
+
+function renderApiDocsHtml() {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ConvertFlow API Docs</title>
+    <style>
+      body { margin: 0; background: #f6f7fb; }
+      redoc { display: block; min-height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <redoc spec-url="/api/openapi.yaml"></redoc>
+    <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+  </body>
+</html>`;
+}
+
 export async function registerRoutes(httpServer: Server, app: Express) {
   const authRateLimit = createRateLimiter(
     10,
@@ -350,6 +484,103 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   app.get("/api/auth/me", requireAuth, (req: Request, res: Response) => {
     return res.json(serializeUser(req.user!));
+  });
+
+  app.get("/api/openapi.yaml", async (_req: Request, res: Response) => {
+    try {
+      const specPath = OPENAPI_SPEC_PATHS.find((candidate) => fs.existsSync(candidate));
+      if (!specPath) {
+        throw new Error("OpenAPI spec is unavailable.");
+      }
+
+      const spec = await fs.promises.readFile(specPath, "utf8");
+      res.type("application/yaml");
+      return res.send(spec);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "OpenAPI spec is unavailable.";
+      return res.status(500).json({ error: message });
+    }
+  });
+
+  app.get("/api/docs", (_req: Request, res: Response) => {
+    res.type("html");
+    return res.send(renderApiDocsHtml());
+  });
+
+  app.get("/api/keys", requireAuth, async (req: Request, res: Response) => {
+    const apiKeys = await storage.listApiKeys(req.user!.id);
+    return res.json({
+      items: apiKeys.map((apiKey) => serializeApiKey(apiKey)),
+    });
+  });
+
+  app.post("/api/keys", requireAuth, async (req: Request, res: Response) => {
+    const parsed = apiKeyCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: getValidationMessage(parsed.error) });
+    }
+
+    const rawToken = createApiKeyToken();
+    const apiKey = await storage.createApiKey({
+      userId: req.user!.id,
+      keyHash: hashSecret(rawToken),
+      name: parsed.data.name,
+      lastUsedAt: null,
+      revokedAt: null,
+    });
+
+    return res.status(201).json({
+      apiKey: serializeApiKey(apiKey),
+      token: rawToken,
+    });
+  });
+
+  app.delete("/api/keys/:id", requireAuth, async (req: Request, res: Response) => {
+    const id = Number.parseInt(getFirstValue(req.params.id) ?? "", 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ error: "Invalid API key id." });
+    }
+
+    const revoked = await storage.revokeApiKey(id, req.user!.id);
+    if (!revoked) {
+      return res.status(404).json({ error: "API key not found." });
+    }
+
+    return res.status(204).end();
+  });
+
+  app.post("/api/webhooks", requireAuth, async (req: Request, res: Response) => {
+    const parsed = webhookCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: getValidationMessage(parsed.error) });
+    }
+
+    const secret = parsed.data.secret?.trim() || createWebhookSecret();
+    const webhook = await storage.createWebhook({
+      userId: req.user!.id,
+      url: parsed.data.url,
+      events: parsed.data.events,
+      secret,
+    });
+
+    return res.status(201).json({
+      secret,
+      webhook: serializeWebhook(webhook),
+    });
+  });
+
+  app.delete("/api/webhooks/:id", requireAuth, async (req: Request, res: Response) => {
+    const id = Number.parseInt(getFirstValue(req.params.id) ?? "", 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ error: "Invalid webhook id." });
+    }
+
+    const deleted = await storage.deleteWebhook(id, req.user!.id);
+    if (!deleted) {
+      return res.status(404).json({ error: "Webhook not found." });
+    }
+
+    return res.status(204).end();
   });
 
   app.post("/api/billing/checkout", requireAuth, async (req: Request, res: Response) => {
@@ -448,7 +679,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.post("/api/convert", optionalAuth, async (req: Request, res: Response) => {
+  app.post("/api/convert", optionalApiAuth, async (req: Request, res: Response) => {
     const owner = getUploadOwner(req, res);
     if (!owner) {
       safeUnlink(req.file?.path);
@@ -458,22 +689,15 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     const plan = getEffectivePlan(req.user?.plan);
     const planLimits = getPlanLimits(plan);
     const usageWindowStart = getStartOfCurrentUtcDay();
+    const idempotencyKey = getFirstValue(req.header("idempotency-key"))?.trim() || null;
+    const idempotencyKeyHash = idempotencyKey ? hashSecret(idempotencyKey) : null;
 
     let conversion: Conversion | null = null;
     let inputKey: string | null = null;
     let file: Express.Multer.File | null = null;
+    let requestHash: string | null = null;
 
     try {
-      if (planLimits.conversionsPerDay !== null) {
-        const usageCount = owner.userId !== null
-          ? await storage.countUsageEventsSince(owner.userId, "conversion", usageWindowStart)
-          : await storage.countVisitorConversionsSince(owner.visitorId!, usageWindowStart);
-
-        if (usageCount >= planLimits.conversionsPerDay) {
-          return res.status(429).json({ error: getDailyUsageExceededMessage(plan) });
-        }
-      }
-
       file = await parseUploadedFile(req, res, plan);
 
       const targetFormat = getFirstValue(req.body.targetFormat)?.toLowerCase();
@@ -489,6 +713,45 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         return res.status(400).json({
           error: `Cannot route .${sourceFormat} to .${targetFormat}.`,
         });
+      }
+
+      if (idempotencyKeyHash) {
+        requestHash = buildIdempotencyRequestHash({
+          fileHash: await hashFileContents(file.path),
+          fileSize: file.size,
+          sourceFormat,
+          targetFormat,
+        });
+
+        const existingKey = await storage.getIdempotencyKey(
+          idempotencyKeyHash,
+          buildIdempotencyScope(owner),
+        );
+
+        if (existingKey) {
+          safeUnlink(file.path);
+
+          if (existingKey.requestHash !== requestHash) {
+            return res.status(409).json({
+              error: "Idempotency key has already been used for a different request.",
+            });
+          }
+
+          return res
+            .status(existingKey.responseStatus)
+            .json(JSON.parse(existingKey.responseBody) as unknown);
+        }
+      }
+
+      if (planLimits.conversionsPerDay !== null) {
+        const usageCount = owner.userId !== null
+          ? await storage.countUsageEventsSince(owner.userId, "conversion", usageWindowStart)
+          : await storage.countVisitorConversionsSince(owner.visitorId!, usageWindowStart);
+
+        if (usageCount >= planLimits.conversionsPerDay) {
+          safeUnlink(file.path);
+          return res.status(429).json({ error: getDailyUsageExceededMessage(plan) });
+        }
       }
 
       const expiresAt = getPlanRetentionDeadline(plan);
@@ -511,6 +774,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         expiresAt,
       });
 
+      const responseBody = serializeConversion(conversion);
+
       await scheduleConversionExpiryJob({ conversionId: conversion.id }, expiresAt);
       await enqueueConversionJob({
         conversionId: conversion.id,
@@ -519,7 +784,20 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         targetFormat,
       });
 
-      return res.status(201).json(serializeConversion(conversion));
+      if (idempotencyKeyHash && requestHash) {
+        await storage.createIdempotencyKey({
+          keyHash: idempotencyKeyHash,
+          requestHash,
+          responseStatus: 201,
+          responseBody: JSON.stringify(responseBody),
+          userId: owner.userId,
+          visitorId: owner.visitorId,
+          conversionId: conversion.id,
+          expiresAt: new Date(Date.now() + IDEMPOTENCY_TTL_MS),
+        });
+      }
+
+      return res.status(201).json(responseBody);
     } catch (err: unknown) {
       safeUnlink(file?.path ?? req.file?.path);
       if (inputKey) {
@@ -540,7 +818,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.get("/api/convert/:id", optionalAuth, async (req: Request, res: Response) => {
+  app.get("/api/convert/:id", optionalApiAuth, async (req: Request, res: Response) => {
     const owner = getReadOwner(req, res);
     if (!owner) {
       return;
@@ -588,7 +866,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     });
   });
 
-  app.get("/api/download/:filename", optionalAuth, async (req: Request, res: Response) => {
+  app.get("/api/download/:filename", optionalApiAuth, async (req: Request, res: Response) => {
     const owner = getReadOwner(req, res);
     if (!owner) {
       return;
@@ -617,7 +895,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     return res.redirect(downloadUrl);
   });
 
-  app.get("/api/conversions", optionalAuth, async (req: Request, res: Response) => {
+  app.get("/api/conversions", optionalApiAuth, async (req: Request, res: Response) => {
     const parsedQuery = historyQuerySchema.safeParse({
       format: getFirstValue(req.query.format as string | string[] | undefined),
       limit: getFirstValue(req.query.limit as string | string[] | undefined),

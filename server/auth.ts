@@ -1,11 +1,13 @@
-import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 
+const API_KEY_BYTES = 32;
 const HASH_KEY_LENGTH = 64;
 const PASSWORD_HASH_SCHEME = "scrypt";
 const SALT_BYTES = 16;
 const SESSION_TOKEN_BYTES = 32;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+export const API_KEY_PREFIX = "cf_";
 export const MIN_PASSWORD_LENGTH = 8;
 
 export function normalizeEmail(email: string) {
@@ -59,4 +61,12 @@ export function createSessionToken() {
 
 export function createSessionExpiry(now = new Date()) {
   return new Date(now.getTime() + SESSION_TTL_MS);
+}
+
+export function createApiKeyToken() {
+  return `${API_KEY_PREFIX}${randomBytes(API_KEY_BYTES).toString("base64url")}`;
+}
+
+export function hashSecret(secret: string) {
+  return createHash("sha256").update(secret).digest("hex");
 }

@@ -277,3 +277,52 @@
   - pro-tier retention windows and usage metering after successful conversion
 
 ---
+
+## Phase 7 — Public API and Developer Access
+
+### Schema and storage
+- Added `api_keys`, `webhooks`, and `idempotency_keys` tables in `shared/schema.ts`
+- Extended `IStorage`, `MemStorage`, and `DrizzleStorage` with API key, webhook, and idempotency record operations
+- Startup maintenance now purges expired idempotency records alongside expired conversions
+
+### API keys and auth
+- Added `POST /api/keys`, `GET /api/keys`, and `DELETE /api/keys/:id`
+- API keys are issued as `cf_...` bearer tokens, stored only as SHA-256 hashes, and expose the raw token once at creation time
+- `server/middleware/auth.ts` now supports session-only auth for account management and API-key-or-session auth for `/api/convert`, `/api/convert/:id`, `/api/download/:filename`, and `/api/conversions`
+- Invalid bearer tokens now return `401` instead of silently degrading into anonymous access
+
+### Webhooks and idempotency
+- Added `POST /api/webhooks` and `DELETE /api/webhooks/:id`
+- Conversion completions and failures now enqueue signed outbound webhook deliveries with per-webhook HMAC headers:
+  - `x-convertflow-event`
+  - `x-convertflow-timestamp`
+  - `x-convertflow-signature`
+- Added retry queue support for failed webhook deliveries with 3 backoff attempts in both memory and `pg-boss` runtimes
+- `POST /api/convert` now accepts `Idempotency-Key`; matching requests within 24 hours return the original `201` response without enqueuing a duplicate job
+
+### Docs and build
+- Added `docs/openapi.yaml` covering the public auth, conversion, API key, webhook, and docs endpoints
+- Added `GET /api/openapi.yaml` and `GET /api/docs` (Redoc)
+- `script/build.ts` now copies the OpenAPI spec into `dist/docs/openapi.yaml` for production builds
+
+### Tests
+- Added `tests/publicApi.test.ts` covering:
+  - API key management plus auth on conversion, history, and download routes
+  - idempotent conversion creation
+  - signed webhook delivery with retry after failure
+  - docs/spec endpoints
+
+### Hardening
+- **SSRF protection**: `isPrivateUrl()` added in `server/routes.ts`; webhook URL validation rejects localhost, `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16` link-local, and IPv6 loopback — prevents server-side request forgery via attacker-controlled webhook destinations
+- **Custom webhook secrets**: `POST /api/webhooks` accepts an optional `secret` field (min 32 chars); if omitted, a 32-byte random secret is auto-generated — allows callers to rotate secrets without re-registering endpoints
+- **Content-addressed idempotency**: The idempotency record hash covers the SHA-256 of the uploaded file contents, source/target formats, and file size in addition to the caller-supplied `Idempotency-Key` header — prevents a key replay attack where a different file is submitted under the same key
+- **API key last-used tracking**: `storage.touchApiKeyLastUsed` fires on every successful API key authentication, recording the timestamp without blocking the request
+
+### Post-review fixes
+- **Webhook retry classification**: `processWebhookDelivery` now distinguishes 4xx (permanent client-side failure, no retry) from 5xx and network errors (retryable) — previously all non-ok responses were retried, causing invalid webhook URLs to exhaust all retry slots unnecessarily
+- **Webhook delivery ID header**: Each outbound webhook delivery now includes a `x-convertflow-delivery-id` UUID header, giving receivers a stable identifier to detect duplicates and correlate retries to their original delivery
+- **API key auth fallback removed**: A `cf_`-prefixed bearer token that fails API key lookup now returns `401` immediately instead of falling through to session auth — eliminates an ambiguous dual-path where an invalid API key could accidentally match a session token
+- **Cross-user API key revocation test**: Added assertion that `DELETE /api/keys/:id` returns 404 when the authenticated user does not own the target key and that the key remains usable afterward
+- **4xx no-retry test**: Added assertion that a webhook endpoint returning 400 receives exactly one delivery attempt with no subsequent retries
+
+---

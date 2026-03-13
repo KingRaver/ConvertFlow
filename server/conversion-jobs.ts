@@ -3,7 +3,7 @@ import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { v4 as uuidv4 } from "uuid";
-import type { Conversion } from "@shared/schema";
+import type { Conversion, WebhookEventType } from "@shared/schema";
 import { ConversionError } from "./converters";
 import { registry } from "./converters/registry";
 import { validateOutputFile } from "./converters/validation";
@@ -21,6 +21,10 @@ export interface ConversionJobPayload {
 
 export interface ExpiryJobPayload {
   conversionId: number;
+}
+
+interface ProcessQueuedConversionOptions {
+  onSettled?: (conversion: Conversion, event: WebhookEventType) => Promise<void>;
 }
 
 export function formatQueuedMessage(sourceFormat: string, targetFormat: string) {
@@ -85,6 +89,22 @@ async function cleanupWorkspace(dir: string | null) {
   }
 }
 
+async function notifySettledConversion(
+  conversion: Conversion | undefined,
+  event: WebhookEventType,
+  options?: ProcessQueuedConversionOptions,
+) {
+  if (!conversion || !options?.onSettled) {
+    return;
+  }
+
+  try {
+    await options.onSettled(conversion, event);
+  } catch (error) {
+    console.error(`Failed to enqueue webhooks for conversion ${conversion.id}`, error);
+  }
+}
+
 export async function expireConversionRecord(
   conversion: Conversion,
   activeStorage: IStorage = storage,
@@ -119,7 +139,7 @@ export async function processQueuedConversion({
   inputKey,
   sourceFormat,
   targetFormat,
-}: ConversionJobPayload) {
+}: ConversionJobPayload, options?: ProcessQueuedConversionOptions) {
   const conversion = await storage.getConversion(conversionId).catch(async (error) => {
     await safeDeleteStoredFile(inputKey);
     throw error;
@@ -165,7 +185,7 @@ export async function processQueuedConversion({
     await safeDeleteStoredFile(inputKey);
 
     const convertedSize = fs.statSync(workspace.outputPath).size;
-    await storage.updateConversion(conversionId, {
+    const completedConversion = await storage.updateConversion(conversionId, {
       convertedSize,
       engineUsed,
       outputFilename,
@@ -185,17 +205,21 @@ export async function processQueuedConversion({
         console.error(`Failed to record usage for conversion ${conversionId}`, usageError);
       }
     }
+
+    await notifySettledConversion(completedConversion, "conversion.completed", options);
   } catch (error) {
     await safeDeleteStoredFile(inputKey);
     await safeDeleteStoredFile(outputKey);
 
-    await storage.updateConversion(conversionId, {
+    const failedConversion = await storage.updateConversion(conversionId, {
       convertedSize: null,
       engineUsed,
       outputFilename: null,
       resultMessage: formatFailureMessage(error, sourceFormat, targetFormat),
       status: "failed",
     });
+
+    await notifySettledConversion(failedConversion, "conversion.failed", options);
   } finally {
     safeUnlink(workspace?.inputPath);
     safeUnlink(workspace?.outputPath);

@@ -1,18 +1,25 @@
-import { and, asc, desc, eq, gte, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type {
+  ApiKey,
   Conversion,
+  IdempotencyKey,
+  InsertApiKey,
   InsertConversion,
+  InsertIdempotencyKey,
   InsertSession,
   InsertUser,
   InsertUsageEvent,
+  InsertWebhook,
   Session,
   User,
   UsageEvent,
   UsageEventType,
+  Webhook,
+  WebhookEventType,
 } from "@shared/schema";
-import { conversions, sessions, usageEvents, users } from "@shared/schema";
+import { apiKeys, conversions, idempotencyKeys, sessions, usageEvents, users, webhooks } from "@shared/schema";
 import { getDb } from "../db";
-import type { ConversionListOptions, IStorage, PaginatedConversions } from "../storage";
+import type { ConversionListOptions, IStorage, IdempotencyScope, PaginatedConversions } from "../storage";
 
 function stripUndefined<T extends object>(updates: Partial<T>) {
   return Object.fromEntries(
@@ -47,6 +54,17 @@ function buildConversionFilters(options: ConversionListOptions) {
   }
 
   return and(...conditions);
+}
+
+function buildIdempotencyScopeFilter(scope: IdempotencyScope) {
+  if ("userId" in scope && scope.userId !== undefined) {
+    return eq(idempotencyKeys.userId, scope.userId);
+  }
+
+  return and(
+    isNull(idempotencyKeys.userId),
+    eq(idempotencyKeys.visitorId, scope.visitorId),
+  );
 }
 
 export class DrizzleStorage implements IStorage {
@@ -213,6 +231,132 @@ export class DrizzleStorage implements IStorage {
 
   async deleteSessionByToken(token: string): Promise<void> {
     await this.db.delete(sessions).where(eq(sessions.token, token));
+  }
+
+  async listApiKeys(userId: number): Promise<ApiKey[]> {
+    return this.db
+      .select()
+      .from(apiKeys)
+      .where(eq(apiKeys.userId, userId))
+      .orderBy(desc(apiKeys.createdAt), desc(apiKeys.id));
+  }
+
+  async createApiKey(apiKey: InsertApiKey): Promise<ApiKey> {
+    const [created] = await this.db.insert(apiKeys).values(apiKey).returning();
+    return created;
+  }
+
+  async getActiveApiKeyByHash(keyHash: string): Promise<ApiKey | undefined> {
+    const [apiKey] = await this.db
+      .select()
+      .from(apiKeys)
+      .where(
+        and(
+          eq(apiKeys.keyHash, keyHash),
+          isNull(apiKeys.revokedAt),
+        ),
+      );
+
+    return apiKey;
+  }
+
+  async touchApiKeyLastUsed(id: number, lastUsedAt: Date): Promise<void> {
+    await this.db
+      .update(apiKeys)
+      .set({ lastUsedAt })
+      .where(eq(apiKeys.id, id));
+  }
+
+  async revokeApiKey(id: number, userId: number, revokedAt = new Date()): Promise<boolean> {
+    const updated = await this.db
+      .update(apiKeys)
+      .set({ revokedAt })
+      .where(
+        and(
+          eq(apiKeys.id, id),
+          eq(apiKeys.userId, userId),
+          isNull(apiKeys.revokedAt),
+        ),
+      )
+      .returning({ id: apiKeys.id });
+
+    return updated.length > 0;
+  }
+
+  async createWebhook(webhook: InsertWebhook): Promise<Webhook> {
+    const [created] = await this.db.insert(webhooks).values(webhook).returning();
+    return created;
+  }
+
+  async getWebhook(id: number): Promise<Webhook | undefined> {
+    const [webhook] = await this.db
+      .select()
+      .from(webhooks)
+      .where(eq(webhooks.id, id));
+
+    return webhook;
+  }
+
+  async listWebhooksForEvent(userId: number, event: WebhookEventType): Promise<Webhook[]> {
+    return this.db
+      .select()
+      .from(webhooks)
+      .where(
+        and(
+          eq(webhooks.userId, userId),
+          sql<boolean>`${event} = any(${webhooks.events})`,
+        ),
+      )
+      .orderBy(asc(webhooks.createdAt), asc(webhooks.id));
+  }
+
+  async deleteWebhook(id: number, userId: number): Promise<boolean> {
+    const deleted = await this.db
+      .delete(webhooks)
+      .where(
+        and(
+          eq(webhooks.id, id),
+          eq(webhooks.userId, userId),
+        ),
+      )
+      .returning({ id: webhooks.id });
+
+    return deleted.length > 0;
+  }
+
+  async createIdempotencyKey(key: InsertIdempotencyKey): Promise<IdempotencyKey> {
+    const [created] = await this.db.insert(idempotencyKeys).values(key).returning();
+    return created;
+  }
+
+  async getIdempotencyKey(
+    keyHash: string,
+    scope: IdempotencyScope,
+    now = new Date(),
+  ): Promise<IdempotencyKey | undefined> {
+    const [key] = await this.db
+      .select()
+      .from(idempotencyKeys)
+      .where(
+        and(
+          eq(idempotencyKeys.keyHash, keyHash),
+          buildIdempotencyScopeFilter(scope),
+          gt(idempotencyKeys.expiresAt, now),
+        ),
+      )
+      .orderBy(desc(idempotencyKeys.createdAt), desc(idempotencyKeys.id))
+      .limit(1);
+
+    return key;
+  }
+
+  async deleteExpiredIdempotencyKeys(now: Date): Promise<number> {
+    const deleted = await this.db
+      .delete(idempotencyKeys)
+      .where(lte(idempotencyKeys.expiresAt, now))
+      .returning({ id: idempotencyKeys.id });
+
+    return deleted.length;
   }
 
   async createUsageEvent(event: InsertUsageEvent): Promise<UsageEvent> {
