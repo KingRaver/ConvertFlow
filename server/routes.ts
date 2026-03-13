@@ -2,14 +2,17 @@ import type { Express, NextFunction, Request, Response } from "express";
 import type { Server } from "http";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import multer from "multer";
 import path from "path";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import {
+  type Batch,
   CONVERSION_STATUSES,
   type Conversion,
   type ConversionStatus,
+  getConversionOptionsSchema,
   SUPPORTED_CONVERSIONS,
   SUPPORTED_FORMATS,
   type UserPlan,
@@ -64,6 +67,7 @@ import {
 } from "./queue";
 import { storage } from "./storage";
 import { createWebhookSecret, serializeWebhook } from "./webhooks";
+import { createZipArchive } from "./zip";
 
 const authCredentialsSchema = z.object({
   email: z.string().trim().email("A valid email address is required.").transform(normalizeEmail),
@@ -99,6 +103,25 @@ const apiKeyCreateSchema = z.object({
     .max(100, "API key name must be 100 characters or fewer."),
 });
 
+const presetCreateSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, "Preset name is required.")
+    .max(100, "Preset name must be 100 characters or fewer."),
+  options: z.record(z.unknown()).optional().default({}),
+  sourceFormat: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .min(1, "Source format is required."),
+  targetFormat: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .min(1, "Target format is required."),
+});
+
 function isPrivateUrl(urlString: string): boolean {
   let hostname: string;
   try {
@@ -124,6 +147,10 @@ function isPrivateUrl(urlString: string): boolean {
   return false;
 }
 
+function allowPrivateWebhookUrls() {
+  return process.env.NODE_ENV !== "production";
+}
+
 const webhookCreateSchema = z.object({
   events: z.array(z.enum(WEBHOOK_EVENT_TYPES)).min(1).default([...WEBHOOK_EVENT_TYPES]),
   secret: z
@@ -139,12 +166,13 @@ const webhookCreateSchema = z.object({
     .refine((value) => value.startsWith("http://") || value.startsWith("https://"), {
       message: "Webhook URL must use http or https.",
     })
-    .refine((value) => !isPrivateUrl(value), {
+    .refine((value) => allowPrivateWebhookUrls() || !isPrivateUrl(value), {
       message: "Webhook URL must not point to a private or internal address.",
     }),
 });
 
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+const BATCH_MAX_FILES = 20;
 const OPENAPI_SPEC_PATHS = [
   path.resolve(process.cwd(), "docs/openapi.yaml"),
   path.resolve(process.cwd(), "dist/docs/openapi.yaml"),
@@ -173,19 +201,22 @@ function getValidationMessage(error: z.ZodError) {
 
 function serializeConversion(conversion: Conversion) {
   return {
-    id: conversion.id,
-    originalName: conversion.originalName,
-    originalFormat: conversion.originalFormat,
-    targetFormat: conversion.targetFormat,
-    status: conversion.status,
-    fileSize: conversion.fileSize,
+    batchId: conversion.batchId,
+    createdAt: conversion.createdAt?.toISOString() ?? null,
     convertedSize: conversion.convertedSize,
-    outputFilename: conversion.outputFilename,
-    resultMessage: conversion.resultMessage,
     engineUsed: conversion.engineUsed,
     expiresAt: conversion.expiresAt?.toISOString() ?? null,
-    createdAt: conversion.createdAt?.toISOString() ?? null,
+    fileSize: conversion.fileSize,
+    id: conversion.id,
+    originalFormat: conversion.originalFormat,
+    originalName: conversion.originalName,
+    options: conversion.options ?? {},
+    outputFilename: conversion.outputFilename,
+    presetId: conversion.presetId,
     processingStartedAt: conversion.processingStartedAt?.toISOString() ?? null,
+    resultMessage: conversion.resultMessage,
+    status: conversion.status,
+    targetFormat: conversion.targetFormat,
   };
 }
 
@@ -218,6 +249,43 @@ function serializeApiKey(apiKey: {
     lastUsedAt: apiKey.lastUsedAt?.toISOString() ?? null,
     createdAt: apiKey.createdAt?.toISOString() ?? null,
     revokedAt: apiKey.revokedAt?.toISOString() ?? null,
+  };
+}
+
+function serializeBatch(batch: {
+  completedJobs: number;
+  createdAt: Date | null;
+  failedJobs: number;
+  id: number;
+  status: string;
+  totalJobs: number;
+}, jobs?: Conversion[]) {
+  return {
+    completedJobs: batch.completedJobs,
+    createdAt: batch.createdAt?.toISOString() ?? null,
+    failedJobs: batch.failedJobs,
+    id: batch.id,
+    jobs: jobs?.map((job) => serializeConversion(job)),
+    status: batch.status,
+    totalJobs: batch.totalJobs,
+  };
+}
+
+function serializePreset(preset: {
+  createdAt: Date | null;
+  id: number;
+  name: string;
+  options: Record<string, unknown>;
+  sourceFormat: string;
+  targetFormat: string;
+}) {
+  return {
+    createdAt: preset.createdAt?.toISOString() ?? null,
+    id: preset.id,
+    name: preset.name,
+    options: preset.options,
+    sourceFormat: preset.sourceFormat,
+    targetFormat: preset.targetFormat,
   };
 }
 
@@ -357,6 +425,45 @@ async function parseUploadedFile(
   });
 }
 
+async function parseUploadedFiles(
+  req: Request,
+  res: Response,
+  plan: UserPlan,
+) {
+  const upload = createUploadMiddleware(getPlanLimits(plan).maxFileSizeBytes).array("files", BATCH_MAX_FILES);
+
+  return new Promise<Express.Multer.File[]>((resolve, reject) => {
+    upload(req, res, (error) => {
+      if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+        reject(new HttpError(413, getFileSizeExceededMessage(plan)));
+        return;
+      }
+
+      if (
+        error instanceof multer.MulterError &&
+        (error.code === "LIMIT_FILE_COUNT" ||
+          (error.code === "LIMIT_UNEXPECTED_FILE" && error.field === "files"))
+      ) {
+        reject(new HttpError(400, `Batch uploads are limited to ${BATCH_MAX_FILES} files.`));
+        return;
+      }
+
+      if (error) {
+        reject(error instanceof Error ? new HttpError(400, error.message) : error);
+        return;
+      }
+
+      const files = Array.isArray(req.files) ? req.files : [];
+      if (files.length === 0) {
+        reject(new HttpError(400, "No files uploaded."));
+        return;
+      }
+
+      resolve(files);
+    });
+  });
+}
+
 function getRequestBaseUrl(req: Request) {
   const protocol = getFirstValue(req.header("x-forwarded-proto")) ?? req.protocol;
   const host = getFirstValue(req.header("x-forwarded-host")) ?? req.header("host");
@@ -376,13 +483,202 @@ function buildIdempotencyScope(owner: { userId: number | null; visitorId: string
   return { visitorId: owner.visitorId! } as const;
 }
 
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(object[key])}`).join(",")}}`;
+  }
+
+  return JSON.stringify(value);
+}
+
 function buildIdempotencyRequestHash(input: {
   fileHash: string;
   fileSize: number;
+  options: Record<string, unknown>;
+  presetId: number | null;
   sourceFormat: string;
   targetFormat: string;
 }) {
-  return hashSecret(JSON.stringify(input));
+  return hashSecret(stableStringify(input));
+}
+
+function getTextField(value: unknown) {
+  if (Array.isArray(value)) {
+    return typeof value[0] === "string" ? value[0] : undefined;
+  }
+
+  return typeof value === "string" ? value : undefined;
+}
+
+function parseJsonField(value: unknown, fieldLabel: string) {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      throw new HttpError(400, `${fieldLabel} must be valid JSON.`);
+    }
+  }
+
+  return value;
+}
+
+function requireObjectValue(value: unknown, fieldLabel: string) {
+  if (value === undefined) {
+    return {};
+  }
+
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    throw new HttpError(400, `${fieldLabel} must be a JSON object.`);
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function parseOptionalInteger(value: unknown, fieldLabel: string) {
+  const raw = getTextField(value);
+  if (raw === undefined || raw.trim() === "") {
+    if (typeof value === "number" && Number.isInteger(value)) {
+      return value;
+    }
+
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isNaN(parsed)) {
+    throw new HttpError(400, `${fieldLabel} must be a valid integer.`);
+  }
+
+  return parsed;
+}
+
+function validateTargetRoute(sourceFormat: string, targetFormat: string) {
+  const validTargets = SUPPORTED_CONVERSIONS[sourceFormat];
+  if (!validTargets || !validTargets.includes(targetFormat)) {
+    throw new HttpError(400, `Cannot route .${sourceFormat} to .${targetFormat}.`);
+  }
+}
+
+function validateConversionOptions(
+  sourceFormat: string,
+  targetFormat: string,
+  options: Record<string, unknown>,
+) {
+  const parsed = getConversionOptionsSchema(sourceFormat, targetFormat).safeParse(options);
+  if (!parsed.success) {
+    throw new HttpError(400, getValidationMessage(parsed.error));
+  }
+
+  return parsed.data as Record<string, unknown>;
+}
+
+async function resolvePresetForRequest(userId: number | null, rawPresetId: unknown) {
+  const presetId = parseOptionalInteger(rawPresetId, "Preset id");
+  if (presetId === undefined) {
+    return undefined;
+  }
+
+  if (userId === null) {
+    throw new HttpError(401, "Authentication required to use presets.");
+  }
+
+  const preset = await storage.getPreset(presetId);
+  if (!preset || preset.userId !== userId) {
+    throw new HttpError(404, "Preset not found.");
+  }
+
+  return preset;
+}
+
+async function resolveConversionRequest(input: {
+  ownerUserId: number | null;
+  rawOptions: unknown;
+  rawPresetId: unknown;
+  rawTargetFormat: unknown;
+  sourceFormat: string;
+}) {
+  const preset = await resolvePresetForRequest(input.ownerUserId, input.rawPresetId);
+  const requestedTargetFormat = getTextField(input.rawTargetFormat)?.trim().toLowerCase();
+
+  if (preset && requestedTargetFormat && requestedTargetFormat !== preset.targetFormat) {
+    throw new HttpError(400, "Preset target format does not match the requested target format.");
+  }
+
+  if (preset && preset.sourceFormat !== input.sourceFormat) {
+    throw new HttpError(
+      400,
+      `Preset "${preset.name}" only applies to .${preset.sourceFormat} files.`,
+    );
+  }
+
+  const targetFormat = (requestedTargetFormat || preset?.targetFormat)?.toLowerCase();
+  if (!targetFormat) {
+    throw new HttpError(400, "Target format is required.");
+  }
+
+  validateTargetRoute(input.sourceFormat, targetFormat);
+
+  const parsedOptions = requireObjectValue(parseJsonField(input.rawOptions, "Options"), "Options");
+  const mergedOptions = preset
+    ? { ...preset.options, ...parsedOptions }
+    : parsedOptions;
+
+  return {
+    options: validateConversionOptions(input.sourceFormat, targetFormat, mergedOptions),
+    presetId: preset?.id ?? null,
+    targetFormat,
+  };
+}
+
+async function enforceConversionAllowance(
+  owner: { userId: number | null; visitorId: string | null },
+  plan: UserPlan,
+  requestedConversions = 1,
+) {
+  const planLimits = getPlanLimits(plan);
+  if (planLimits.conversionsPerDay === null) {
+    return;
+  }
+
+  const usageWindowStart = getStartOfCurrentUtcDay();
+  const usageCount = owner.userId !== null
+    ? await storage.countUsageEventsSince(owner.userId, "conversion", usageWindowStart)
+    : await storage.countVisitorConversionsSince(owner.visitorId!, usageWindowStart);
+
+  if (usageCount + requestedConversions > planLimits.conversionsPerDay) {
+    throw new HttpError(429, getDailyUsageExceededMessage(plan));
+  }
+}
+
+async function persistUploadedFile(file: Express.Multer.File) {
+  const inputKey = getUploadObjectKey(file.filename);
+  await filestore.save(file.path, inputKey);
+  safeUnlink(file.path);
+  return inputKey;
+}
+
+function cleanupUploadedFiles(files: Array<Express.Multer.File | null | undefined>) {
+  for (const file of files) {
+    safeUnlink(file?.path);
+  }
+}
+
+function requireUserContext(req: Request, res: Response) {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required." });
+    return undefined;
+  }
+
+  return req.user;
 }
 
 function renderApiDocsHtml() {
@@ -402,6 +698,61 @@ function renderApiDocsHtml() {
     <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
   </body>
 </html>`;
+}
+
+function getUniqueArchiveName(filename: string, usedNames: Set<string>) {
+  if (!usedNames.has(filename)) {
+    usedNames.add(filename);
+    return filename;
+  }
+
+  const parsed = path.parse(filename);
+  let counter = 2;
+  let candidate = `${parsed.name} (${counter})${parsed.ext}`;
+
+  while (usedNames.has(candidate)) {
+    counter += 1;
+    candidate = `${parsed.name} (${counter})${parsed.ext}`;
+  }
+
+  usedNames.add(candidate);
+  return candidate;
+}
+
+async function buildBatchArchive(conversions: Conversion[]) {
+  const workspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), "convertflow-batch-"));
+  const archivePath = path.join(workspace, "batch.zip");
+  const usedNames = new Set<string>();
+  const entries = [];
+
+  for (const conversion of conversions) {
+    if (!conversion.outputFilename) {
+      continue;
+    }
+
+    const downloadName = getUniqueArchiveName(
+      getDownloadFilename(conversion.originalName, conversion.targetFormat),
+      usedNames,
+    );
+    const localPath = path.join(workspace, `${entries.length + 1}-${conversion.outputFilename}`);
+    await filestore.get(getOutputObjectKey(conversion.outputFilename), localPath);
+    entries.push({
+      name: downloadName,
+      sourcePath: localPath,
+    });
+  }
+
+  if (entries.length === 0) {
+    await fs.promises.rm(workspace, { force: true, recursive: true });
+    throw new HttpError(404, "No completed batch outputs are available for download.");
+  }
+
+  await createZipArchive(archivePath, entries);
+
+  return {
+    archivePath,
+    cleanup: () => fs.promises.rm(workspace, { force: true, recursive: true }),
+  };
 }
 
 export async function registerRoutes(httpServer: Server, app: Express) {
@@ -549,6 +900,76 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     return res.status(204).end();
   });
 
+  app.get("/api/presets", optionalApiAuth, async (req: Request, res: Response) => {
+    const user = requireUserContext(req, res);
+    if (!user) {
+      return;
+    }
+
+    const presets = await storage.listPresets(user.id);
+    return res.json({
+      items: presets.map((preset) => serializePreset(preset)),
+    });
+  });
+
+  app.post("/api/presets", optionalApiAuth, async (req: Request, res: Response) => {
+    const user = requireUserContext(req, res);
+    if (!user) {
+      return;
+    }
+
+    const parsed = presetCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: getValidationMessage(parsed.error) });
+    }
+
+    try {
+      validateTargetRoute(parsed.data.sourceFormat, parsed.data.targetFormat);
+      const options = validateConversionOptions(
+        parsed.data.sourceFormat,
+        parsed.data.targetFormat,
+        parsed.data.options,
+      );
+
+      const preset = await storage.createPreset({
+        userId: user.id,
+        name: parsed.data.name,
+        sourceFormat: parsed.data.sourceFormat,
+        targetFormat: parsed.data.targetFormat,
+        options,
+      });
+
+      return res.status(201).json({
+        preset: serializePreset(preset),
+      });
+    } catch (error) {
+      if (error instanceof HttpError) {
+        return res.status(error.status).json({ error: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.delete("/api/presets/:id", optionalApiAuth, async (req: Request, res: Response) => {
+    const user = requireUserContext(req, res);
+    if (!user) {
+      return;
+    }
+
+    const id = Number.parseInt(getFirstValue(req.params.id) ?? "", 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ error: "Invalid preset id." });
+    }
+
+    const deleted = await storage.deletePreset(id, user.id);
+    if (!deleted) {
+      return res.status(404).json({ error: "Preset not found." });
+    }
+
+    return res.status(204).end();
+  });
+
   app.post("/api/webhooks", requireAuth, async (req: Request, res: Response) => {
     const parsed = webhookCreateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -679,6 +1100,246 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
+  app.post("/api/batch", optionalApiAuth, async (req: Request, res: Response) => {
+    const user = requireUserContext(req, res);
+    if (!user) {
+      cleanupUploadedFiles(Array.isArray(req.files) ? req.files : []);
+      return;
+    }
+
+    const visitorId = getOptionalVisitorId(req);
+    const plan = getEffectivePlan(user.plan);
+    const idempotencyKey = getFirstValue(req.header("idempotency-key"))?.trim() || null;
+    const idempotencyKeyHash = idempotencyKey ? hashSecret(idempotencyKey) : null;
+    let batchRequestHash: string | null = null;
+
+    let files: Express.Multer.File[] = [];
+    let batch: Batch | null = null;
+    const createdConversions: Conversion[] = [];
+    const persistedInputKeys: string[] = [];
+
+    try {
+      files = await parseUploadedFiles(req, res, plan);
+
+      const resolvedRequests = await Promise.all(files.map(async (file) => {
+        const sourceFormat = path.extname(file.originalname).slice(1).toLowerCase();
+
+        const resolved = await resolveConversionRequest({
+          ownerUserId: user.id,
+          rawOptions: req.body.options,
+          rawPresetId: req.body.presetId,
+          rawTargetFormat: req.body.targetFormat,
+          sourceFormat,
+        });
+
+        return {
+          ...resolved,
+          sourceFormat,
+        };
+      }));
+
+      if (idempotencyKeyHash) {
+        const fileHashes = await Promise.all(files.map((file) => hashFileContents(file.path)));
+        batchRequestHash = hashSecret(stableStringify(
+          files.map((file, index) => ({
+            fileHash: fileHashes[index],
+            fileSize: file.size,
+            options: resolvedRequests[index]!.options,
+            presetId: resolvedRequests[index]!.presetId,
+            sourceFormat: resolvedRequests[index]!.sourceFormat,
+            targetFormat: resolvedRequests[index]!.targetFormat,
+          })),
+        ));
+
+        const existingKey = await storage.getIdempotencyKey(idempotencyKeyHash, { userId: user.id });
+        if (existingKey) {
+          cleanupUploadedFiles(files);
+          if (existingKey.requestHash !== batchRequestHash) {
+            return res.status(409).json({
+              error: "Idempotency key has already been used for a different request.",
+            });
+          }
+
+          return res
+            .status(existingKey.responseStatus)
+            .json(JSON.parse(existingKey.responseBody) as unknown);
+        }
+      }
+
+      await enforceConversionAllowance({ userId: user.id, visitorId }, plan, files.length);
+
+      const expiresAt = getPlanRetentionDeadline(plan);
+
+      for (const file of files) {
+        const inputKey = await persistUploadedFile(file);
+        persistedInputKeys.push(inputKey);
+      }
+
+      const result = await storage.createBatchWithConversions(
+        {
+          userId: user.id,
+          status: "pending",
+          totalJobs: files.length,
+          completedJobs: 0,
+          failedJobs: 0,
+        },
+        files.map((file, index) => ({
+          originalName: file.originalname,
+          originalFormat: resolvedRequests[index]!.sourceFormat,
+          targetFormat: resolvedRequests[index]!.targetFormat,
+          inputKey: persistedInputKeys[index]!,
+          status: "pending" as const,
+          fileSize: file.size,
+          outputFilename: null,
+          resultMessage: formatQueuedMessage(resolvedRequests[index]!.sourceFormat, resolvedRequests[index]!.targetFormat),
+          userId: user.id,
+          visitorId,
+          presetId: resolvedRequests[index]!.presetId,
+          options: resolvedRequests[index]!.options,
+          expiresAt,
+        })),
+      );
+      batch = result.batch;
+      createdConversions.push(...result.conversions);
+
+      for (let index = 0; index < createdConversions.length; index += 1) {
+        const conversion = createdConversions[index]!;
+        await scheduleConversionExpiryJob({ conversionId: conversion.id }, expiresAt);
+        await enqueueConversionJob({
+          conversionId: conversion.id,
+          inputKey: persistedInputKeys[index]!,
+          sourceFormat: resolvedRequests[index]!.sourceFormat,
+          targetFormat: resolvedRequests[index]!.targetFormat,
+        });
+      }
+
+      const syncedBatch = await storage.syncBatch(batch.id) ?? batch;
+      const responseBody = serializeBatch(syncedBatch, createdConversions);
+
+      if (idempotencyKeyHash && batchRequestHash) {
+        await storage.createIdempotencyKey({
+          keyHash: idempotencyKeyHash,
+          requestHash: batchRequestHash,
+          responseStatus: 201,
+          responseBody: JSON.stringify(responseBody),
+          userId: user.id,
+          visitorId: null,
+          conversionId: null,
+          expiresAt: new Date(Date.now() + IDEMPOTENCY_TTL_MS),
+        });
+      }
+
+      return res.status(201).json(responseBody);
+    } catch (err: unknown) {
+      cleanupUploadedFiles(files);
+
+      await Promise.all(
+        persistedInputKeys.map(async (inputKey) => {
+          try {
+            await filestore.delete(inputKey);
+          } catch (deleteError) {
+            console.error(`Failed to delete uploaded object: ${inputKey}`, deleteError);
+          }
+        }),
+      );
+
+      await Promise.all([
+        ...createdConversions.map(async (conversion) => {
+          try {
+            await storage.deleteConversion(conversion.id);
+          } catch (deleteError) {
+            console.error(`Failed to delete conversion record ${conversion.id}`, deleteError);
+          }
+        }),
+        ...(batch
+          ? [storage.deleteBatch(batch.id).catch((deleteError: unknown) => {
+              console.error(`Failed to delete batch record ${batch!.id}`, deleteError);
+            })]
+          : []),
+      ]);
+
+      if (err instanceof HttpError) {
+        return res.status(err.status).json({ error: err.message });
+      }
+
+      const error = err as Error;
+      return res.status(500).json({ error: error.message || "Batch conversion failed." });
+    }
+  });
+
+  app.get("/api/batch/:id", optionalApiAuth, async (req: Request, res: Response) => {
+    const user = requireUserContext(req, res);
+    if (!user) {
+      return;
+    }
+
+    const id = Number.parseInt(getFirstValue(req.params.id) ?? "", 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ error: "Invalid batch id." });
+    }
+
+    const batch = await storage.getBatch(id);
+    if (!batch || batch.userId !== user.id) {
+      return res.status(404).json({ error: "Batch not found." });
+    }
+
+    const syncedBatch = await storage.syncBatch(batch.id);
+    if (!syncedBatch) {
+      return res.status(404).json({ error: "Batch not found." });
+    }
+
+    const jobs = await storage.listBatchConversions(id);
+    return res.json(serializeBatch(syncedBatch, jobs));
+  });
+
+  app.get("/api/batch/:id/download", optionalApiAuth, async (req: Request, res: Response, next: NextFunction) => {
+    const user = requireUserContext(req, res);
+    if (!user) {
+      return;
+    }
+
+    const id = Number.parseInt(getFirstValue(req.params.id) ?? "", 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ error: "Invalid batch id." });
+    }
+
+    const batch = await storage.getBatch(id);
+    if (!batch || batch.userId !== user.id) {
+      return res.status(404).json({ error: "Batch not found." });
+    }
+
+    try {
+      const jobs = (await storage.listBatchConversions(id)).filter((conversion) => (
+        conversion.status === "completed" &&
+        conversion.outputFilename !== null &&
+        (!conversion.expiresAt || conversion.expiresAt.getTime() > Date.now())
+      ));
+
+      const archive = await buildBatchArchive(jobs);
+      res.download(archive.archivePath, `batch-${id}.zip`, async (error) => {
+        try {
+          await archive.cleanup();
+        } catch (cleanupError) {
+          console.error(`Failed to clean up batch archive workspace for batch ${id}`, cleanupError);
+        }
+
+        if (!error) {
+          return;
+        }
+
+        if (!res.headersSent) {
+          next(error);
+        }
+      });
+    } catch (error) {
+      if (error instanceof HttpError) {
+        return res.status(error.status).json({ error: error.message });
+      }
+
+      return next(error);
+    }
+  });
+
   app.post("/api/convert", optionalApiAuth, async (req: Request, res: Response) => {
     const owner = getUploadOwner(req, res);
     if (!owner) {
@@ -687,33 +1348,29 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
 
     const plan = getEffectivePlan(req.user?.plan);
-    const planLimits = getPlanLimits(plan);
-    const usageWindowStart = getStartOfCurrentUtcDay();
     const idempotencyKey = getFirstValue(req.header("idempotency-key"))?.trim() || null;
     const idempotencyKeyHash = idempotencyKey ? hashSecret(idempotencyKey) : null;
 
     let conversion: Conversion | null = null;
     let inputKey: string | null = null;
     let file: Express.Multer.File | null = null;
+    let options: Record<string, unknown> = {};
+    let presetId: number | null = null;
     let requestHash: string | null = null;
+    let sourceFormat: string | null = null;
+    let targetFormat: string | null = null;
 
     try {
       file = await parseUploadedFile(req, res, plan);
 
-      const targetFormat = getFirstValue(req.body.targetFormat)?.toLowerCase();
-      if (!targetFormat) {
-        safeUnlink(file.path);
-        return res.status(400).json({ error: "Target format is required." });
-      }
-
-      const sourceFormat = path.extname(file.originalname).slice(1).toLowerCase();
-      const validTargets = SUPPORTED_CONVERSIONS[sourceFormat];
-      if (!validTargets || !validTargets.includes(targetFormat)) {
-        safeUnlink(file.path);
-        return res.status(400).json({
-          error: `Cannot route .${sourceFormat} to .${targetFormat}.`,
-        });
-      }
+      sourceFormat = path.extname(file.originalname).slice(1).toLowerCase();
+      ({ options, presetId, targetFormat } = await resolveConversionRequest({
+        ownerUserId: owner.userId,
+        rawOptions: req.body.options,
+        rawPresetId: req.body.presetId,
+        rawTargetFormat: req.body.targetFormat,
+        sourceFormat,
+      }));
 
       if (idempotencyKeyHash) {
         requestHash = buildIdempotencyRequestHash({
@@ -721,6 +1378,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           fileSize: file.size,
           sourceFormat,
           targetFormat,
+          options,
+          presetId,
         });
 
         const existingKey = await storage.getIdempotencyKey(
@@ -743,26 +1402,16 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         }
       }
 
-      if (planLimits.conversionsPerDay !== null) {
-        const usageCount = owner.userId !== null
-          ? await storage.countUsageEventsSince(owner.userId, "conversion", usageWindowStart)
-          : await storage.countVisitorConversionsSince(owner.visitorId!, usageWindowStart);
-
-        if (usageCount >= planLimits.conversionsPerDay) {
-          safeUnlink(file.path);
-          return res.status(429).json({ error: getDailyUsageExceededMessage(plan) });
-        }
-      }
+      await enforceConversionAllowance(owner, plan, 1);
 
       const expiresAt = getPlanRetentionDeadline(plan);
-      inputKey = getUploadObjectKey(file.filename);
-      await filestore.save(file.path, inputKey);
-      safeUnlink(file.path);
+      inputKey = await persistUploadedFile(file);
 
       conversion = await storage.createConversion({
         originalName: file.originalname,
         originalFormat: sourceFormat,
         targetFormat,
+        inputKey,
         status: "pending",
         fileSize: file.size,
         outputFilename: null,
@@ -771,6 +1420,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         resultMessage: formatQueuedMessage(sourceFormat, targetFormat),
         userId: owner.userId,
         visitorId: owner.visitorId,
+        batchId: null,
+        presetId,
+        options,
         expiresAt,
       });
 
@@ -799,7 +1451,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       return res.status(201).json(responseBody);
     } catch (err: unknown) {
-      safeUnlink(file?.path ?? req.file?.path);
+      cleanupUploadedFiles([file, req.file]);
       if (inputKey) {
         try {
           await filestore.delete(inputKey);
@@ -841,6 +1493,88 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
 
     return res.json(serializeConversion(conversion));
+  });
+
+  app.post("/api/convert/:id/retry", optionalApiAuth, async (req: Request, res: Response) => {
+    const owner = getReadOwner(req, res);
+    if (!owner) {
+      return;
+    }
+
+    const id = Number.parseInt(getFirstValue(req.params.id) ?? "", 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ error: "Invalid conversion id." });
+    }
+
+    const conversion = await storage.getConversion(id);
+    if (!conversion || !canAccessConversion(conversion, owner)) {
+      return res.status(404).json({ error: "Conversion not found." });
+    }
+
+    if (conversion.expiresAt && conversion.expiresAt.getTime() <= Date.now()) {
+      await expireConversionRecord(conversion);
+      return res.status(404).json({ error: "Conversion expired." });
+    }
+
+    if (conversion.status !== "failed") {
+      return res.status(409).json({ error: "Only failed conversions can be retried." });
+    }
+
+    if (!conversion.inputKey || !(await filestore.exists(conversion.inputKey))) {
+      return res.status(409).json({
+        error: "The original input file is no longer available for retry.",
+      });
+    }
+
+    const plan = getEffectivePlan(req.user?.plan);
+
+    try {
+      await enforceConversionAllowance(
+        {
+          userId: conversion.userId,
+          visitorId: conversion.visitorId,
+        },
+        plan,
+        1,
+      );
+
+      const retried = await storage.updateConversion(conversion.id, {
+        convertedSize: null,
+        engineUsed: null,
+        outputFilename: null,
+        processingStartedAt: null,
+        resultMessage: formatQueuedMessage(conversion.originalFormat, conversion.targetFormat),
+        status: "pending",
+      });
+
+      if (!retried) {
+        return res.status(404).json({ error: "Conversion not found." });
+      }
+
+      if (retried.batchId) {
+        await storage.syncBatch(retried.batchId);
+      }
+
+      if (retried.expiresAt) {
+        await scheduleConversionExpiryJob({ conversionId: retried.id }, retried.expiresAt);
+      }
+
+      await enqueueConversionJob({
+        conversionId: retried.id,
+        inputKey: retried.inputKey!,
+        sourceFormat: retried.originalFormat,
+        targetFormat: retried.targetFormat,
+      });
+
+      return res.json(serializeConversion(retried));
+    } catch (error) {
+      if (error instanceof HttpError) {
+        return res.status(error.status).json({ error: error.message });
+      }
+
+      const message = error instanceof Error ? error.message : "Retry failed.";
+      return res.status(500).json({ error: message });
+    }
   });
 
   app.get("/api/download/local", (req: Request, res: Response, next: NextFunction) => {

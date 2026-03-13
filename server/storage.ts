@@ -1,15 +1,20 @@
 import type {
   ApiKey,
+  Batch,
+  BatchStatus,
   Conversion,
   ConversionStatus,
   IdempotencyKey,
   InsertApiKey,
+  InsertBatch,
   InsertConversion,
   InsertIdempotencyKey,
+  InsertPreset,
   InsertSession,
   InsertUser,
   InsertUsageEvent,
   InsertWebhook,
+  Preset,
   Session,
   User,
   UsageEvent,
@@ -41,13 +46,26 @@ export type IdempotencyScope =
   | { userId?: never; visitorId: string };
 
 export interface IStorage {
+  createBatch(batch: InsertBatch): Promise<Batch>;
+  createBatchWithConversions(
+    batch: InsertBatch,
+    conversions: Array<Omit<InsertConversion, "batchId">>,
+  ): Promise<{ batch: Batch; conversions: Conversion[] }>;
+  getBatch(id: number): Promise<Batch | undefined>;
   createConversion(conversion: InsertConversion): Promise<Conversion>;
+  createPreset(preset: InsertPreset): Promise<Preset>;
+  deleteBatch(id: number): Promise<void>;
   getConversion(id: number): Promise<Conversion | undefined>;
   getConversionByOutputFilename(outputFilename: string): Promise<Conversion | undefined>;
+  getPreset(id: number): Promise<Preset | undefined>;
+  listBatchConversions(batchId: number): Promise<Conversion[]>;
   updateConversion(id: number, updates: Partial<Conversion>): Promise<Conversion | undefined>;
+  syncBatch(batchId: number): Promise<Batch | undefined>;
   listConversions(options: ConversionListOptions): Promise<PaginatedConversions>;
+  listPresets(userId: number): Promise<Preset[]>;
   getExpiredConversions(now: Date): Promise<Conversion[]>;
   failStaleProcessingJobs(cutoff: Date, resultMessage: string): Promise<number>;
+  deletePreset(id: number, userId: number): Promise<boolean>;
   deleteConversion(id: number): Promise<void>;
   createUser(user: InsertUser): Promise<User>;
   createUserWithSession(user: InsertUser, session: InsertSession): Promise<{ session: Session; user: User }>;
@@ -91,17 +109,69 @@ function matchesIdempotencyScope(record: IdempotencyKey, scope: IdempotencyScope
   return record.userId === null && record.visitorId === scope.visitorId;
 }
 
+function sortByCreatedAsc<T extends { createdAt: Date | null; id: number }>(left: T, right: T) {
+  const createdDelta = (left.createdAt?.getTime() ?? 0) - (right.createdAt?.getTime() ?? 0);
+  if (createdDelta !== 0) {
+    return createdDelta;
+  }
+
+  return left.id - right.id;
+}
+
+function sortByCreatedDesc<T extends { createdAt: Date | null; id: number }>(left: T, right: T) {
+  const createdDelta = (right.createdAt?.getTime() ?? 0) - (left.createdAt?.getTime() ?? 0);
+  if (createdDelta !== 0) {
+    return createdDelta;
+  }
+
+  return right.id - left.id;
+}
+
+function deriveBatchStatus(jobs: Conversion[], completedJobs: number, failedJobs: number): BatchStatus {
+  const settledJobs = completedJobs + failedJobs;
+
+  if (jobs.length === 0 || settledJobs === 0) {
+    return jobs.some((job) => job.status === "processing") ? "processing" : "pending";
+  }
+
+  if (settledJobs < jobs.length) {
+    return "processing";
+  }
+
+  if (failedJobs === 0) {
+    return "completed";
+  }
+
+  if (completedJobs === 0) {
+    return "failed";
+  }
+
+  return "partial";
+}
+
+function normalizeOptionsRecord(value: unknown) {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    return null;
+  }
+
+  return { ...(value as Record<string, unknown>) };
+}
+
 export class MemStorage implements IStorage {
   private apiKeys: Map<number, ApiKey>;
+  private batches: Map<number, Batch>;
   private conversions: Map<number, Conversion>;
   private idempotencyKeys: Map<number, IdempotencyKey>;
   private nextApiKeyId: number;
+  private nextBatchId: number;
   private nextConversionId: number;
   private nextIdempotencyKeyId: number;
+  private nextPresetId: number;
   private nextSessionId: number;
   private nextUserId: number;
   private nextUsageEventId: number;
   private nextWebhookId: number;
+  private presets: Map<number, Preset>;
   private sessions: Map<number, Session>;
   private usageEvents: Map<number, UsageEvent>;
   private users: Map<number, User>;
@@ -109,19 +179,43 @@ export class MemStorage implements IStorage {
 
   constructor() {
     this.apiKeys = new Map();
+    this.batches = new Map();
     this.conversions = new Map();
     this.idempotencyKeys = new Map();
+    this.presets = new Map();
     this.users = new Map();
     this.sessions = new Map();
     this.usageEvents = new Map();
     this.webhooks = new Map();
     this.nextApiKeyId = 1;
+    this.nextBatchId = 1;
     this.nextConversionId = 1;
     this.nextIdempotencyKeyId = 1;
+    this.nextPresetId = 1;
     this.nextUserId = 1;
     this.nextSessionId = 1;
     this.nextUsageEventId = 1;
     this.nextWebhookId = 1;
+  }
+
+  async createBatch(data: InsertBatch): Promise<Batch> {
+    const id = this.nextBatchId++;
+    const batch: Batch = {
+      id,
+      userId: data.userId,
+      status: data.status ?? "pending",
+      totalJobs: data.totalJobs,
+      completedJobs: data.completedJobs,
+      failedJobs: data.failedJobs,
+      createdAt: new Date(),
+    };
+
+    this.batches.set(id, batch);
+    return batch;
+  }
+
+  async getBatch(id: number): Promise<Batch | undefined> {
+    return this.batches.get(id);
   }
 
   async createConversion(data: InsertConversion): Promise<Conversion> {
@@ -131,6 +225,7 @@ export class MemStorage implements IStorage {
       originalName: data.originalName,
       originalFormat: data.originalFormat,
       targetFormat: data.targetFormat,
+      inputKey: data.inputKey ?? null,
       status: data.status ?? "pending",
       fileSize: data.fileSize,
       convertedSize: data.convertedSize ?? null,
@@ -138,6 +233,9 @@ export class MemStorage implements IStorage {
       resultMessage: data.resultMessage ?? null,
       visitorId: data.visitorId ?? null,
       userId: data.userId ?? null,
+      batchId: data.batchId ?? null,
+      presetId: data.presetId ?? null,
+      options: normalizeOptionsRecord(data.options),
       processingStartedAt: data.processingStartedAt ?? null,
       engineUsed: data.engineUsed ?? null,
       createdAt: new Date(),
@@ -145,6 +243,33 @@ export class MemStorage implements IStorage {
     };
     this.conversions.set(id, conversion);
     return conversion;
+  }
+
+  async createBatchWithConversions(
+    batchData: InsertBatch,
+    conversionList: Array<Omit<InsertConversion, "batchId">>,
+  ): Promise<{ batch: Batch; conversions: Conversion[] }> {
+    const batch = await this.createBatch(batchData);
+    const conversions = await Promise.all(
+      conversionList.map((conv) => this.createConversion({ ...conv, batchId: batch.id })),
+    );
+    return { batch, conversions };
+  }
+
+  async createPreset(data: InsertPreset): Promise<Preset> {
+    const id = this.nextPresetId++;
+    const preset: Preset = {
+      id,
+      userId: data.userId,
+      name: data.name,
+      sourceFormat: data.sourceFormat,
+      targetFormat: data.targetFormat,
+      options: normalizeOptionsRecord(data.options) ?? {},
+      createdAt: new Date(),
+    };
+
+    this.presets.set(id, preset);
+    return preset;
   }
 
   async getConversion(id: number): Promise<Conversion | undefined> {
@@ -155,6 +280,16 @@ export class MemStorage implements IStorage {
     return Array.from(this.conversions.values()).find(
       (conversion) => conversion.outputFilename === outputFilename,
     );
+  }
+
+  async getPreset(id: number): Promise<Preset | undefined> {
+    return this.presets.get(id);
+  }
+
+  async listBatchConversions(batchId: number): Promise<Conversion[]> {
+    return Array.from(this.conversions.values())
+      .filter((conversion) => conversion.batchId === batchId)
+      .sort(sortByCreatedAsc);
   }
 
   async updateConversion(id: number, updates: Partial<Conversion>): Promise<Conversion | undefined> {
@@ -169,6 +304,32 @@ export class MemStorage implements IStorage {
     };
 
     this.conversions.set(id, updated);
+    return updated;
+  }
+
+  async syncBatch(batchId: number): Promise<Batch | undefined> {
+    const batch = this.batches.get(batchId);
+    if (!batch) {
+      return undefined;
+    }
+
+    const jobs = await this.listBatchConversions(batchId);
+    if (jobs.length === 0) {
+      this.batches.delete(batchId);
+      return undefined;
+    }
+
+    const completedJobs = jobs.filter((job) => job.status === "completed").length;
+    const failedJobs = jobs.filter((job) => job.status === "failed").length;
+    const updated: Batch = {
+      ...batch,
+      status: deriveBatchStatus(jobs, completedJobs, failedJobs),
+      totalJobs: jobs.length,
+      completedJobs,
+      failedJobs,
+    };
+
+    this.batches.set(batchId, updated);
     return updated;
   }
 
@@ -244,6 +405,10 @@ export class MemStorage implements IStorage {
 
   async deleteConversion(id: number): Promise<void> {
     this.conversions.delete(id);
+  }
+
+  async deleteBatch(id: number): Promise<void> {
+    this.batches.delete(id);
   }
 
   async createUserWithSession(userData: InsertUser, sessionData: InsertSession): Promise<{ session: Session; user: User }> {
@@ -512,6 +677,34 @@ export class MemStorage implements IStorage {
       conversion.status === "completed" &&
       (conversion.createdAt?.getTime() ?? 0) >= since.getTime()
     )).length;
+  }
+
+  async listPresets(userId: number): Promise<Preset[]> {
+    return Array.from(this.presets.values())
+      .filter((preset) => preset.userId === userId)
+      .sort(sortByCreatedDesc);
+  }
+
+  async deletePreset(id: number, userId: number): Promise<boolean> {
+    const preset = this.presets.get(id);
+    if (!preset || preset.userId !== userId) {
+      return false;
+    }
+
+    this.presets.delete(id);
+
+    for (const [conversionId, conversion] of Array.from(this.conversions.entries())) {
+      if (conversion.presetId !== id) {
+        continue;
+      }
+
+      this.conversions.set(conversionId, {
+        ...conversion,
+        presetId: null,
+      });
+    }
+
+    return true;
   }
 }
 

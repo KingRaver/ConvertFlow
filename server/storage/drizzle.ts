@@ -1,15 +1,19 @@
 import { and, asc, desc, eq, gt, gte, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type {
   ApiKey,
+  Batch,
   Conversion,
   IdempotencyKey,
   InsertApiKey,
+  InsertBatch,
   InsertConversion,
   InsertIdempotencyKey,
+  InsertPreset,
   InsertSession,
   InsertUser,
   InsertUsageEvent,
   InsertWebhook,
+  Preset,
   Session,
   User,
   UsageEvent,
@@ -17,7 +21,7 @@ import type {
   Webhook,
   WebhookEventType,
 } from "@shared/schema";
-import { apiKeys, conversions, idempotencyKeys, sessions, usageEvents, users, webhooks } from "@shared/schema";
+import { apiKeys, batches, conversions, idempotencyKeys, presets, sessions, usageEvents, users, webhooks } from "@shared/schema";
 import { getDb } from "../db";
 import type { ConversionListOptions, IStorage, IdempotencyScope, PaginatedConversions } from "../storage";
 
@@ -67,11 +71,86 @@ function buildIdempotencyScopeFilter(scope: IdempotencyScope) {
   );
 }
 
+function deriveBatchStatus(jobs: Conversion[], completedJobs: number, failedJobs: number) {
+  const settledJobs = completedJobs + failedJobs;
+
+  if (jobs.length === 0 || settledJobs === 0) {
+    return jobs.some((job) => job.status === "processing") ? "processing" : "pending";
+  }
+
+  if (settledJobs < jobs.length) {
+    return "processing";
+  }
+
+  if (failedJobs === 0) {
+    return "completed";
+  }
+
+  if (completedJobs === 0) {
+    return "failed";
+  }
+
+  return "partial";
+}
+
+function normalizeOptionsRecord(value: unknown) {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
 export class DrizzleStorage implements IStorage {
   private readonly db = getDb();
 
+  async createBatch(batch: InsertBatch): Promise<Batch> {
+    const [created] = await this.db.insert(batches).values(batch).returning();
+    return created;
+  }
+
+  async getBatch(id: number): Promise<Batch | undefined> {
+    const [batch] = await this.db
+      .select()
+      .from(batches)
+      .where(eq(batches.id, id));
+
+    return batch;
+  }
+
   async createConversion(conversion: InsertConversion): Promise<Conversion> {
-    const [created] = await this.db.insert(conversions).values(conversion).returning();
+    const [created] = await this.db.insert(conversions).values({
+      ...conversion,
+      options: normalizeOptionsRecord(conversion.options),
+    }).returning();
+    return created;
+  }
+
+  async createBatchWithConversions(
+    batchData: InsertBatch,
+    conversionList: Array<Omit<InsertConversion, "batchId">>,
+  ): Promise<{ batch: Batch; conversions: Conversion[] }> {
+    return this.db.transaction(async (tx) => {
+      const [createdBatch] = await tx.insert(batches).values(batchData).returning();
+      const createdConversions = await Promise.all(
+        conversionList.map(async (conv) => {
+          const [created] = await tx.insert(conversions).values({
+            ...conv,
+            batchId: createdBatch.id,
+            options: normalizeOptionsRecord(conv.options),
+          }).returning();
+          return created;
+        }),
+      );
+      return { batch: createdBatch, conversions: createdConversions };
+    });
+  }
+
+  async createPreset(preset: InsertPreset): Promise<Preset> {
+    const [created] = await this.db.insert(presets).values({
+      ...preset,
+      options: normalizeOptionsRecord(preset.options) ?? {},
+    }).returning();
     return created;
   }
 
@@ -93,6 +172,23 @@ export class DrizzleStorage implements IStorage {
     return conversion;
   }
 
+  async getPreset(id: number): Promise<Preset | undefined> {
+    const [preset] = await this.db
+      .select()
+      .from(presets)
+      .where(eq(presets.id, id));
+
+    return preset;
+  }
+
+  async listBatchConversions(batchId: number): Promise<Conversion[]> {
+    return this.db
+      .select()
+      .from(conversions)
+      .where(eq(conversions.batchId, batchId))
+      .orderBy(asc(conversions.createdAt), asc(conversions.id));
+  }
+
   async updateConversion(id: number, updates: Partial<Conversion>): Promise<Conversion | undefined> {
     const sanitizedUpdates = stripUndefined(updates);
     if (Object.keys(sanitizedUpdates).length === 0) {
@@ -103,6 +199,35 @@ export class DrizzleStorage implements IStorage {
       .update(conversions)
       .set(sanitizedUpdates)
       .where(eq(conversions.id, id))
+      .returning();
+
+    return updated;
+  }
+
+  async syncBatch(batchId: number): Promise<Batch | undefined> {
+    const batch = await this.getBatch(batchId);
+    if (!batch) {
+      return undefined;
+    }
+
+    const jobs = await this.listBatchConversions(batchId);
+    if (jobs.length === 0) {
+      await this.deleteBatch(batchId);
+      return undefined;
+    }
+
+    const completedJobs = jobs.filter((job) => job.status === "completed").length;
+    const failedJobs = jobs.filter((job) => job.status === "failed").length;
+
+    const [updated] = await this.db
+      .update(batches)
+      .set({
+        completedJobs,
+        failedJobs,
+        status: deriveBatchStatus(jobs, completedJobs, failedJobs),
+        totalJobs: jobs.length,
+      })
+      .where(eq(batches.id, batchId))
       .returning();
 
     return updated;
@@ -167,6 +292,10 @@ export class DrizzleStorage implements IStorage {
 
   async deleteConversion(id: number): Promise<void> {
     await this.db.delete(conversions).where(eq(conversions.id, id));
+  }
+
+  async deleteBatch(id: number): Promise<void> {
+    await this.db.delete(batches).where(eq(batches.id, id));
   }
 
   async createUserWithSession(userData: InsertUser, sessionData: InsertSession): Promise<{ session: Session; user: User }> {
@@ -397,5 +526,38 @@ export class DrizzleStorage implements IStorage {
       );
 
     return Number(row?.value ?? 0);
+  }
+
+  async listPresets(userId: number): Promise<Preset[]> {
+    return this.db
+      .select()
+      .from(presets)
+      .where(eq(presets.userId, userId))
+      .orderBy(desc(presets.createdAt), desc(presets.id));
+  }
+
+  async deletePreset(id: number, userId: number): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      const deleted = await tx
+        .delete(presets)
+        .where(
+          and(
+            eq(presets.id, id),
+            eq(presets.userId, userId),
+          ),
+        )
+        .returning({ id: presets.id });
+
+      if (deleted.length === 0) {
+        return false;
+      }
+
+      await tx
+        .update(conversions)
+        .set({ presetId: null })
+        .where(eq(conversions.presetId, id));
+
+      return true;
+    });
   }
 }

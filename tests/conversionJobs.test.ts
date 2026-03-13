@@ -71,10 +71,11 @@ test("processQueuedConversion converts txt→docx and marks the job completed", 
 
   const outputPath = path.join(OUTPUT_DIR, result.outputFilename);
   assert.ok(fs.existsSync(outputPath), "output file should exist on disk");
-  assert.equal(fs.existsSync(inputPath), false, "input file should be deleted after conversion");
+  assert.equal(fs.existsSync(inputPath), true, "input file should be retained for retry until expiry");
 
   t.after(() => {
     if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
   });
 });
 
@@ -143,10 +144,11 @@ test("processQueuedConversion is a no-op for already-completed jobs", async () =
     targetFormat: "docx",
   });
 
-  assert.equal(fs.existsSync(inputPath), false, "input file should be cleaned up");
+  assert.equal(fs.existsSync(inputPath), true, "input file should be retained");
   const result = await storage.getConversion(conversion.id);
   assert.ok(result);
   assert.equal(result.status, "completed", "status must not be changed");
+  fs.unlinkSync(inputPath);
 });
 
 test("processQueuedConversion is a no-op for already-failed jobs", async () => {
@@ -160,10 +162,11 @@ test("processQueuedConversion is a no-op for already-failed jobs", async () => {
     targetFormat: "docx",
   });
 
-  assert.equal(fs.existsSync(inputPath), false, "input file should be cleaned up");
+  assert.equal(fs.existsSync(inputPath), true, "input file should be retained for retry");
   const result = await storage.getConversion(conversion.id);
   assert.ok(result);
   assert.equal(result.status, "failed", "status must not be changed");
+  fs.unlinkSync(inputPath);
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -172,14 +175,17 @@ test("processQueuedConversion is a no-op for already-failed jobs", async () => {
 
 test("expireConversionRecord deletes the record and its output file", async (t) => {
   ensureWorkingDirectories();
+  const { inputKey, inputPath } = writeUploadObject("retry me\n", "txt");
   const outputFilename = `${uuidv4()}.docx`;
   const outputPath = path.join(OUTPUT_DIR, outputFilename);
   fs.writeFileSync(outputPath, "fake output");
   t.after(() => {
+    if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
     if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
   });
 
   const conversion = await makeConversion({
+    inputKey,
     status: "completed",
     outputFilename,
     expiresAt: new Date(Date.now() - 1_000),
@@ -187,6 +193,7 @@ test("expireConversionRecord deletes the record and its output file", async (t) 
 
   await expireConversionRecord(conversion);
 
+  assert.equal(fs.existsSync(inputPath), false, "input file should be deleted");
   assert.equal(fs.existsSync(outputPath), false, "output file should be deleted");
   assert.equal(
     await storage.getConversion(conversion.id),
@@ -218,14 +225,17 @@ test("expireConversionRecord handles a record with no output file", async () => 
 
 test("expireConversionById deletes an expired record and its output file", async (t) => {
   ensureWorkingDirectories();
+  const { inputKey, inputPath } = writeUploadObject("retry me\n", "txt");
   const outputFilename = `${uuidv4()}.docx`;
   const outputPath = path.join(OUTPUT_DIR, outputFilename);
   fs.writeFileSync(outputPath, "fake output");
   t.after(() => {
+    if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
     if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
   });
 
   const conversion = await makeConversion({
+    inputKey,
     status: "completed",
     outputFilename,
     expiresAt: new Date(Date.now() - 1_000),
@@ -234,6 +244,7 @@ test("expireConversionById deletes an expired record and its output file", async
   const result = await expireConversionById({ conversionId: conversion.id });
 
   assert.equal(result, true);
+  assert.equal(fs.existsSync(inputPath), false, "input file should be deleted");
   assert.equal(fs.existsSync(outputPath), false, "output file should be deleted");
   assert.equal(
     await storage.getConversion(conversion.id),

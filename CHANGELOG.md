@@ -326,3 +326,62 @@
 - **4xx no-retry test**: Added assertion that a webhook endpoint returning 400 receives exactly one delivery attempt with no subsequent retries
 
 ---
+
+## Phase 8 — Batch Conversions, Presets, and Quality Options
+
+### Schema and storage
+- Added `batches` table to `shared/schema.ts`: `id`, `userId`, `status` (`pending|processing|completed|failed|partial`), `totalJobs`, `completedJobs`, `failedJobs`, `createdAt`
+- Added `presets` table: `id`, `userId`, `name`, `sourceFormat`, `targetFormat`, `options` (jsonb), `createdAt`
+- Added `batchId` (nullable FK → batches, set null on delete) and `presetId` (nullable FK → presets, set null on delete) to `conversions`
+- Added `BATCH_STATUSES`, `BatchStatus`, `InsertBatch`, `Batch`, `InsertPreset`, `Preset` exports
+- Extended `IStorage`, `MemStorage`, and `DrizzleStorage` with `createBatch`, `getBatch`, `deleteBatch`, `syncBatch`, `listBatchConversions`, `createPreset`, `getPreset`, `listPresets`, and `deletePreset`
+- Added `createBatchWithConversions(batch, conversions[])` to `IStorage`: atomically creates a batch record and all its child conversion records in a single operation; `DrizzleStorage` wraps both inserts in a Drizzle transaction; `MemStorage` performs sequential operations (inherently atomic in the single-threaded JS runtime)
+
+### Batch upload endpoint
+- `POST /api/batch`: accepts `multipart/form-data` with `files[]` (up to 20), shared `targetFormat`, optional `presetId`, optional `options`
+- File persistence separated from DB creation: all uploaded files are saved to the filestore first, then `createBatchWithConversions` writes the batch + all conversions atomically — eliminates partial batch state if any DB insert fails
+- Multer over-limit detection catches both `LIMIT_FILE_COUNT` and `LIMIT_UNEXPECTED_FILE` (with `error.field === "files"`) to correctly handle the 21st same-named multipart field
+- Error cleanup uses `persistedInputKeys[]` to delete any filestore objects that were written before the failure, and compensating deletes for any DB records that were created
+- `GET /api/batch/:id`: returns current batch state with full job list; calls `syncBatch` to recompute aggregate counters from live job statuses
+- `GET /api/batch/:id/download`: streams a ZIP archive of all completed outputs; returns 404 if no completed jobs exist
+
+### ZIP archive (`server/zip.ts`)
+- Custom ZIP writer using Node.js built-ins only (no external zip library)
+- Switched from "stored" (no compression, method 0) to deflate compression (method 8) via `zlib.createDeflateRaw()`
+- `compressFile()` computes CRC32 and deflates in a single file read: raw `data` events update the CRC32 accumulator while the stream is simultaneously piped through `DeflateRaw`; avoids reading each file twice
+- CRC32 uses the standard 0xEDB88320 polynomial table; final value XOR'd with `0xFFFFFFFF` per spec
+- Local file headers and central directory entries both write compression method `8`, compressed size, and uncompressed size separately
+- Path traversal protection in `normalizeEntryName`: splits on `/`, filters `..` and `.` segments, strips leading slashes
+
+### Presets
+- `POST /api/presets`: creates a named format conversion preset scoped to the authenticated user; validates the source→target route and options schema at creation time
+- `GET /api/presets`: lists all presets for the authenticated user
+- `DELETE /api/presets/:id`: deletes the preset and null-ifies `presetId` on all associated conversions
+- Presets are isolated per user: `resolvePresetForRequest` checks `preset.userId === ownerUserId` and returns 404 for cross-user access attempts
+- Preset format mismatch (source format doesn't match uploaded file, or `targetFormat` conflicts with the explicit request field) returns 400 with a descriptive message
+
+### Quality options
+- Added `imageQualityOptionsSchema`, `pdfImageOptionsSchema`, `pdfTextOptionsSchema`, `audioBitrateOptionsSchema`, and `videoGifOptionsSchema` in `shared/schema.ts`
+- `getConversionOptionsSchema(sourceFormat, targetFormat)` returns the appropriate Zod schema for each route; validated on both `POST /api/convert` and `POST /api/batch`
+- `SUPPORTED_CONVERSION_OPTIONS` map wired into both `POST /api/presets` (validated at preset creation) and `resolveConversionRequest` (validated at job intake)
+
+### Idempotency for batch
+- `POST /api/batch` accepts `Idempotency-Key` header; request hash covers file contents (SHA-256), file sizes, resolved options, preset IDs, and format for all files
+- Cache hit replays the stored 201 response without creating a duplicate batch; key conflict (same key, different payload) returns 409
+- Idempotency record stores `conversionId: null` (batch-scoped, no single conversion FK needed)
+
+### Tests (`tests/phase8Routes.test.ts`)
+- `presets can be created, listed, applied to conversions, and deleted` — full preset lifecycle with real txt→docx conversion
+- `batch upload reports progress and returns a zip of completed outputs` — 2-file batch; validates ZIP magic bytes, entry count (2), all `.docx` extensions, and unique entry names via central directory parsing
+- `batch upload rejects more than the maximum allowed file count` — 21 files → 400 with "20" in error message
+- `batch idempotency key prevents duplicate batch creation on retry` — same key submitted twice returns the same batch id
+- `retry re-enqueues a failed conversion using the retained input file` — broken PNG fails, input swapped for valid PNG, retry succeeds
+- `conversion options are validated and affect supported routes` — invalid option on txt→docx returns 400; low vs high quality SVG→JPG produces measurably different output sizes
+- `quality option boundary values are rejected outside 1–100 range` — quality 0, 101, -1, 1000 all return 400
+- `batch with one invalid file produces partial status and zip with only successful outputs` — good.png + bad.png → jpg; batch status `"partial"`, ZIP has exactly 1 entry
+- `creating a preset with an unsupported format combination returns 400` — txt→mp4 rejected at preset creation
+- `a preset belonging to one user is not accessible to another user` — cross-user preset reference returns 404
+- `retrying a conversion whose input file was deleted returns 409` — inputKey deleted from disk; retry returns 409 with "no longer available"
+- `retrying a non-failed conversion returns 409` — pending → 409; completed → 409
+
+---

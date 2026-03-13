@@ -8,7 +8,7 @@ import PDFDocument from "pdfkit";
 import { PDFParse } from "pdf-parse";
 import sharp from "sharp";
 import { stringify as stringifyCsv } from "csv-stringify/sync";
-import { ConversionError, type RegisteredConverterAdapter } from "./index";
+import { ConversionError, type ConversionOptions, type RegisteredConverterAdapter } from "./index";
 import { resolveTextutilBinary, runCommand, withTimeout } from "./runtime";
 
 function sanitizeExtractedText(text: string) {
@@ -18,11 +18,55 @@ function sanitizeExtractedText(text: string) {
     .trim();
 }
 
-async function extractPdfText(inputPath: string) {
+function getNumericOption(options: ConversionOptions, key: string) {
+  const value = options?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function buildPageRangeOptions(options?: ConversionOptions) {
+  const pageStart = getNumericOption(options, "pageStart");
+  const pageEnd = getNumericOption(options, "pageEnd");
+
+  if (pageStart === undefined && pageEnd === undefined) {
+    return undefined;
+  }
+
+  const start = Math.max(1, Math.round(pageStart ?? pageEnd ?? 1));
+  const end = Math.max(start, Math.round(pageEnd ?? pageStart ?? start));
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+}
+
+function getRequestedPage(options?: ConversionOptions) {
+  const page = getNumericOption(options, "page");
+  return page === undefined ? 1 : Math.max(1, Math.round(page));
+}
+
+function getScreenshotScale(options?: ConversionOptions) {
+  const scale = getNumericOption(options, "scale");
+  if (scale === undefined) {
+    return 1.5;
+  }
+
+  return Math.max(1, Math.min(4, scale));
+}
+
+function getJpegQuality(options?: ConversionOptions) {
+  const quality = getNumericOption(options, "quality");
+  if (quality === undefined) {
+    return 90;
+  }
+
+  return Math.max(1, Math.min(100, Math.round(quality)));
+}
+
+async function extractPdfText(inputPath: string, options?: ConversionOptions) {
   const parser = new PDFParse({ data: await fs.readFile(inputPath) });
 
   try {
-    const result = await parser.getText();
+    const partial = buildPageRangeOptions(options);
+    const result = partial?.length
+      ? await parser.getText({ partial })
+      : await parser.getText();
     const text = sanitizeExtractedText(result.text);
     if (!text) {
       throw new ConversionError("No extractable text was found in the PDF.");
@@ -42,14 +86,14 @@ async function extractPdfText(inputPath: string) {
   }
 }
 
-async function renderPdfPage(inputPath: string) {
+async function renderPdfPage(inputPath: string, options?: ConversionOptions) {
   const parser = new PDFParse({ data: await fs.readFile(inputPath) });
 
   try {
     const screenshot = await parser.getScreenshot({
-      first: 1,
       imageDataUrl: false,
-      scale: 1.5,
+      partial: [getRequestedPage(options)],
+      scale: getScreenshotScale(options),
     });
 
     if (screenshot.pages.length === 0) {
@@ -150,7 +194,7 @@ function createDocumentAdapter(
   sourceFormat: string,
   targetFormat: string,
   engineName: string,
-  convert: (inputPath: string, outputPath: string) => Promise<void>,
+  convert: (inputPath: string, outputPath: string, options?: ConversionOptions) => Promise<void>,
 ): RegisteredConverterAdapter {
   return {
     family: "document",
@@ -168,20 +212,20 @@ export const documentAdapters: RegisteredConverterAdapter[] = [
   createDocumentAdapter("doc", "pdf", "textutil+pdfkit", async (inputPath, outputPath) => {
     await writeTextPdf(await readLegacyDocText(inputPath), outputPath);
   }),
-  createDocumentAdapter("pdf", "txt", "pdf-parse", async (inputPath, outputPath) => {
-    await fs.writeFile(outputPath, `${await extractPdfText(inputPath)}\n`, "utf8");
+  createDocumentAdapter("pdf", "txt", "pdf-parse", async (inputPath, outputPath, options) => {
+    await fs.writeFile(outputPath, `${await extractPdfText(inputPath, options)}\n`, "utf8");
   }),
-  createDocumentAdapter("pdf", "png", "pdf-parse", async (inputPath, outputPath) => {
-    await fs.writeFile(outputPath, await renderPdfPage(inputPath));
+  createDocumentAdapter("pdf", "png", "pdf-parse", async (inputPath, outputPath, options) => {
+    await fs.writeFile(outputPath, await renderPdfPage(inputPath, options));
   }),
-  createDocumentAdapter("pdf", "jpg", "pdf-parse+sharp", async (inputPath, outputPath) => {
-    await sharp(await renderPdfPage(inputPath))
+  createDocumentAdapter("pdf", "jpg", "pdf-parse+sharp", async (inputPath, outputPath, options) => {
+    await sharp(await renderPdfPage(inputPath, options))
       .flatten({ background: "#ffffff" })
-      .jpeg({ quality: 90 })
+      .jpeg({ quality: getJpegQuality(options) })
       .toFile(outputPath);
   }),
-  createDocumentAdapter("pdf", "docx", "pdf-parse+docx", async (inputPath, outputPath) => {
-    await writeDocxFromText(await extractPdfText(inputPath), outputPath);
+  createDocumentAdapter("pdf", "docx", "pdf-parse+docx", async (inputPath, outputPath, options) => {
+    await writeDocxFromText(await extractPdfText(inputPath, options), outputPath);
   }),
   createDocumentAdapter("txt", "pdf", "pdfkit", async (inputPath, outputPath) => {
     await writeTextPdf(await readTextFile(inputPath), outputPath);
@@ -195,8 +239,8 @@ export const documentAdapters: RegisteredConverterAdapter[] = [
   createDocumentAdapter("doc", "txt", "textutil", async (inputPath, outputPath) => {
     await fs.writeFile(outputPath, `${await readLegacyDocText(inputPath)}\n`, "utf8");
   }),
-  createDocumentAdapter("pdf", "csv", "pdf-parse+csv-stringify", async (inputPath, outputPath) => {
-    const text = await extractPdfText(inputPath);
+  createDocumentAdapter("pdf", "csv", "pdf-parse+csv-stringify", async (inputPath, outputPath, options) => {
+    const text = await extractPdfText(inputPath, options);
     const rows = text
       .split(/\r?\n/)
       .map((line) => line.trim())

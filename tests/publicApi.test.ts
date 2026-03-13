@@ -1,25 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import express from "express";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { expireConversionRecord } from "../server/conversion-jobs";
 import { registerRoutes } from "../server/routes";
-import { OUTPUT_DIR } from "../server/files";
 import { storage } from "../server/storage";
 
 let emailCounter = 0;
 
-function removeOutputFile(outputFilename?: string | null) {
-  if (!outputFilename) {
+async function cleanupConversion(id: number) {
+  const conversion = await storage.getConversion(id);
+  if (!conversion) {
     return;
   }
 
-  const outputPath = path.join(OUTPUT_DIR, outputFilename);
-  if (fs.existsSync(outputPath)) {
-    fs.unlinkSync(outputPath);
-  }
+  await expireConversionRecord(conversion);
 }
 
 async function startAppServer() {
@@ -253,7 +249,7 @@ test("API keys authenticate conversion, history, and download routes", async (t)
   assert.equal(createResponse.status, 201);
   const created = await createResponse.json() as { id: number };
   t.after(async () => {
-    await storage.deleteConversion(created.id);
+    await cleanupConversion(created.id);
   });
 
   const jobResponse = await fetch(`${server.baseUrl}/api/convert/${created.id}`, {
@@ -282,7 +278,7 @@ test("API keys authenticate conversion, history, and download routes", async (t)
   );
   assert.equal(downloadResponse.status, 302);
   assert.ok(downloadResponse.headers.get("location"));
-  removeOutputFile(settled.outputFilename);
+  await cleanupConversion(created.id);
 
   const revokeResponse = await fetch(`${server.baseUrl}/api/keys/${createdKey.apiKey.id}`, {
     method: "DELETE",
@@ -321,7 +317,7 @@ test("Idempotency-Key reuses the original conversion response", async (t) => {
     status: string;
   };
   t.after(async () => {
-    await storage.deleteConversion(firstJson.id);
+    await cleanupConversion(firstJson.id);
   });
 
   const secondResponse = await createTextConversion(server.baseUrl, headers, {
@@ -347,7 +343,7 @@ test("Idempotency-Key reuses the original conversion response", async (t) => {
   assert.equal(history.items[0]?.id, firstJson.id);
 
   const settled = await waitForSettledJob(server.baseUrl, headers, firstJson.id);
-  removeOutputFile(settled.outputFilename);
+  await cleanupConversion(firstJson.id);
 });
 
 test("conversion webhooks are signed and retried after failures", async (t) => {
@@ -385,13 +381,12 @@ test("conversion webhooks are signed and retried after failures", async (t) => {
   assert.equal(createResponse.status, 201);
   const created = await createResponse.json() as { id: number };
   t.after(async () => {
-    await storage.deleteConversion(created.id);
+    await cleanupConversion(created.id);
   });
 
   const settled = await waitForSettledJob(appServer.baseUrl, {
     authorization: `Bearer ${account.token}`,
   }, created.id);
-  removeOutputFile(settled.outputFilename);
 
   await receiver.waitForRequests(2);
   assert.equal(receiver.requests.length >= 2, true);
@@ -494,13 +489,12 @@ test("webhook 4xx response is treated as permanent failure and not retried", asy
   assert.equal(createResponse.status, 201);
   const created = await createResponse.json() as { id: number };
   t.after(async () => {
-    await storage.deleteConversion(created.id);
+    await cleanupConversion(created.id);
   });
 
   const settled = await waitForSettledJob(appServer.baseUrl, {
     authorization: `Bearer ${account.token}`,
   }, created.id);
-  removeOutputFile(settled.outputFilename);
 
   // Wait for the initial delivery attempt plus the first retry window.
   await new Promise((resolve) => setTimeout(resolve, 1_500));

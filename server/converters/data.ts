@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { parse as parseCsv } from "csv-parse/sync";
 import { stringify as stringifyCsv } from "csv-stringify/sync";
 import ExcelJS from "exceljs";
-import { type RegisteredConverterAdapter } from "./index";
+import { type ConversionOptions, type RegisteredConverterAdapter } from "./index";
 import { withTimeout } from "./runtime";
 
 type Row = Record<string, string | number | boolean | null>;
@@ -73,16 +73,16 @@ function stringifyRows(rows: Row[]) {
 function createDataAdapter(
   sourceFormat: string,
   targetFormat: string,
-  convert: (inputPath: string, outputPath: string) => Promise<void>,
+  convert: (inputPath: string, outputPath: string, options?: ConversionOptions) => Promise<void>,
 ): RegisteredConverterAdapter {
   return {
     family: "data",
     sourceFormat,
     targetFormat,
     engineName: "exceljs+csv",
-    async convert(inputPath, outputPath) {
+    async convert(inputPath, outputPath, options) {
       await withTimeout(
-        () => convert(inputPath, outputPath),
+        () => convert(inputPath, outputPath, options),
         `${sourceFormat}->${targetFormat} data conversion`,
       );
     },

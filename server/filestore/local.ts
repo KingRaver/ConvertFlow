@@ -162,6 +162,15 @@ export class LocalFileStore implements FileStore {
     }
   }
 
+  async exists(key: string) {
+    try {
+      await fs.access(getLocalPathForKey(key));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async getDownloadUrl(key: string, filename: string) {
     const url = createLocalDownloadUrl(key, filename);
     console.info(`[filestore/local] Generated download URL for: ${key}`);

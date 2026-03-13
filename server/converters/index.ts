@@ -1,5 +1,7 @@
+export type ConversionOptions = Record<string, unknown> | null | undefined;
+
 export interface ConverterAdapter {
-  convert(inputPath: string, outputPath: string): Promise<void>;
+  convert(inputPath: string, outputPath: string, options?: ConversionOptions): Promise<void>;
 }
 
 export type ConverterFamily = "image" | "document" | "data" | "audio" | "video";

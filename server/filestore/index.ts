@@ -7,6 +7,7 @@ export interface FileStore {
   save(localPath: string, key: string): Promise<void>;
   get(key: string, localPath: string): Promise<void>;
   delete(key: string): Promise<void>;
+  exists(key: string): Promise<boolean>;
   getDownloadUrl(key: string, filename: string): Promise<string>;
 }
 

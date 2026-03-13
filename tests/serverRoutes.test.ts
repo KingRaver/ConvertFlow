@@ -1,11 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import express from "express";
 import { createServer } from "node:http";
+import { expireConversionRecord } from "../server/conversion-jobs";
 import { registerRoutes } from "../server/routes";
-import { OUTPUT_DIR } from "../server/files";
 import { VISITOR_ID_HEADER } from "../shared/visitor";
 import { storage } from "../server/storage";
 
@@ -13,15 +11,13 @@ const VISITOR_A = "cf_55555555-5555-4555-8555-555555555555";
 const VISITOR_B = "cf_66666666-6666-4666-8666-666666666666";
 let emailCounter = 0;
 
-function removeOutputFile(outputFilename?: string | null) {
-  if (!outputFilename) {
+async function cleanupConversion(id: number) {
+  const conversion = await storage.getConversion(id);
+  if (!conversion) {
     return;
   }
 
-  const outputPath = path.join(OUTPUT_DIR, outputFilename);
-  if (fs.existsSync(outputPath)) {
-    fs.unlinkSync(outputPath);
-  }
+  await expireConversionRecord(conversion);
 }
 
 async function startServer() {
@@ -165,7 +161,7 @@ test("route handlers scope job status and history to the current visitor", async
 
   const created = await createDemoJob(server.baseUrl, VISITOR_A);
   t.after(async () => {
-    await storage.deleteConversion(created.id);
+    await cleanupConversion(created.id);
   });
 
   const ownStatus = await fetch(`${server.baseUrl}/api/convert/${created.id}`, {
@@ -247,8 +243,7 @@ test("queued uploads return pending immediately before the worker settles them",
   const settled = await waitForSettledJob(server.baseUrl, {
     [VISITOR_ID_HEADER]: VISITOR_A,
   }, created.id);
-  removeOutputFile(settled.outputFilename);
-  await storage.deleteConversion(created.id);
+  await cleanupConversion(created.id);
 });
 
 test("free accounts are blocked after reaching the daily conversion limit", async (t) => {
@@ -348,8 +343,7 @@ test("pro accounts receive longer retention and usage metering on successful con
 
   const settled = await waitForSettledJob(server.baseUrl, createAuthHeader(account.token), created.id);
   assert.equal(settled.status, "completed");
-  removeOutputFile(settled.outputFilename);
-  await storage.deleteConversion(created.id);
+  await cleanupConversion(created.id);
 
   const usageCount = await storage.countUsageEventsSince(
     account.user.id,
@@ -398,8 +392,7 @@ test("completed jobs expose a real visitor-scoped download", async (t) => {
   });
   assert.equal(foreignDownload.status, 404);
 
-  removeOutputFile(status.outputFilename);
-  await storage.deleteConversion(created.id);
+  await cleanupConversion(created.id);
 });
 
 test("failed jobs expose their error status but no downloadable output", async (t) => {
@@ -421,7 +414,7 @@ test("failed jobs expose their error status but no downloadable output", async (
     headers: { [VISITOR_ID_HEADER]: VISITOR_A },
   });
   assert.equal(download.status, 404);
-  await storage.deleteConversion(created.id);
+  await cleanupConversion(created.id);
 });
 
 test("GET /api/convert/:id returns 404 and cleans up an expired conversion", async (t) => {
@@ -653,12 +646,8 @@ test("authenticated users can create account-owned jobs and query paginated filt
   const secondCreated = (await secondResponse.json()) as { id: number };
 
   t.after(async () => {
-    const firstSettled = await storage.getConversion(firstCreated.id);
-    const secondSettled = await storage.getConversion(secondCreated.id);
-    removeOutputFile(firstSettled?.outputFilename);
-    removeOutputFile(secondSettled?.outputFilename);
-    await storage.deleteConversion(firstCreated.id);
-    await storage.deleteConversion(secondCreated.id);
+    await cleanupConversion(firstCreated.id);
+    await cleanupConversion(secondCreated.id);
   });
 
   const firstSettled = await waitForSettledJob(

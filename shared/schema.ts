@@ -1,4 +1,4 @@
-import { integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { integer, jsonb, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -10,6 +10,8 @@ export const USAGE_EVENT_TYPES = ["conversion"] as const;
 export type UsageEventType = typeof USAGE_EVENT_TYPES[number];
 export const WEBHOOK_EVENT_TYPES = ["conversion.completed", "conversion.failed"] as const;
 export type WebhookEventType = typeof WEBHOOK_EVENT_TYPES[number];
+export const BATCH_STATUSES = ["pending", "processing", "completed", "failed", "partial"] as const;
+export type BatchStatus = typeof BATCH_STATUSES[number];
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -29,6 +31,30 @@ export const sessions = pgTable("sessions", {
     .references(() => users.id, { onDelete: "cascade" }),
   token: text("token").notNull().unique(),
   expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const batches = pgTable("batches", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("pending"),
+  totalJobs: integer("total_jobs").notNull(),
+  completedJobs: integer("completed_jobs").notNull(),
+  failedJobs: integer("failed_jobs").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const presets = pgTable("presets", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  sourceFormat: text("source_format").notNull(),
+  targetFormat: text("target_format").notNull(),
+  options: jsonb("options").$type<Record<string, unknown>>().notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -84,6 +110,7 @@ export const conversions = pgTable("conversions", {
   originalName: text("original_name").notNull(),
   originalFormat: text("original_format").notNull(),
   targetFormat: text("target_format").notNull(),
+  inputKey: text("input_key"),
   status: text("status").notNull().default("pending"), // pending | processing | completed | failed
   fileSize: integer("file_size").notNull(),
   convertedSize: integer("converted_size"),
@@ -91,6 +118,9 @@ export const conversions = pgTable("conversions", {
   resultMessage: text("result_message"),
   visitorId: text("visitor_id"),
   userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
+  batchId: integer("batch_id").references(() => batches.id, { onDelete: "set null" }),
+  presetId: integer("preset_id").references(() => presets.id, { onDelete: "set null" }),
+  options: jsonb("options").$type<Record<string, unknown> | null>(),
   processingStartedAt: timestamp("processing_started_at"),
   engineUsed: text("engine_used"),
   createdAt: timestamp("created_at").defaultNow(),
@@ -106,6 +136,14 @@ export const insertUserSchema = createInsertSchema(users).omit({
   createdAt: true,
 });
 export const insertSessionSchema = createInsertSchema(sessions).omit({
+  id: true,
+  createdAt: true,
+});
+export const insertBatchSchema = createInsertSchema(batches).omit({
+  id: true,
+  createdAt: true,
+});
+export const insertPresetSchema = createInsertSchema(presets).omit({
   id: true,
   createdAt: true,
 });
@@ -129,6 +167,8 @@ export const insertIdempotencyKeySchema = createInsertSchema(idempotencyKeys).om
 export type InsertConversion = z.infer<typeof insertConversionSchema>;
 export type InsertSession = z.infer<typeof insertSessionSchema>;
 export type InsertUser = z.infer<typeof insertUserSchema>;
+export type InsertBatch = z.infer<typeof insertBatchSchema>;
+export type InsertPreset = z.infer<typeof insertPresetSchema>;
 export type InsertUsageEvent = z.infer<typeof insertUsageEventSchema>;
 export type InsertApiKey = z.infer<typeof insertApiKeySchema>;
 export type InsertWebhook = z.infer<typeof insertWebhookSchema>;
@@ -136,6 +176,8 @@ export type InsertIdempotencyKey = z.infer<typeof insertIdempotencyKeySchema>;
 export type Conversion = typeof conversions.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type User = typeof users.$inferSelect;
+export type Batch = typeof batches.$inferSelect;
+export type Preset = typeof presets.$inferSelect;
 export type UsageEvent = typeof usageEvents.$inferSelect;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type Webhook = typeof webhooks.$inferSelect;
@@ -143,6 +185,35 @@ export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
 
 export const CONVERSION_STATUSES = ["pending", "processing", "completed", "failed"] as const;
 export type ConversionStatus = typeof CONVERSION_STATUSES[number];
+
+const emptyOptionsSchema = z.object({}).strict();
+const imageQualityOptionsSchema = z.object({
+  quality: z.coerce.number().int().min(1).max(100).optional(),
+}).strict();
+const pdfTextOptionsSchema = z.object({
+  pageEnd: z.coerce.number().int().min(1).optional(),
+  pageStart: z.coerce.number().int().min(1).optional(),
+}).strict().refine(
+  (value) => value.pageStart === undefined
+    || value.pageEnd === undefined
+    || value.pageStart <= value.pageEnd,
+  {
+    message: "pageStart must be less than or equal to pageEnd.",
+    path: ["pageStart"],
+  },
+);
+const pdfImageOptionsSchema = z.object({
+  page: z.coerce.number().int().min(1).optional(),
+  quality: z.coerce.number().int().min(1).max(100).optional(),
+  scale: z.coerce.number().min(1).max(4).optional(),
+}).strict();
+const audioBitrateOptionsSchema = z.object({
+  bitrateKbps: z.coerce.number().int().min(32).max(320).optional(),
+}).strict();
+const videoGifOptionsSchema = z.object({
+  fps: z.coerce.number().int().min(1).max(30).optional(),
+  width: z.coerce.number().int().min(64).max(1920).optional(),
+}).strict();
 
 // Supported format conversions
 export const SUPPORTED_CONVERSIONS: Record<string, string[]> = {
@@ -164,6 +235,57 @@ export const SUPPORTED_CONVERSIONS: Record<string, string[]> = {
   "bmp": ["png", "jpg"],
   "tiff": ["png", "jpg"],
 };
+
+export const SUPPORTED_CONVERSION_OPTIONS: Record<string, Record<string, z.ZodTypeAny>> = {
+  "pdf": {
+    "csv": pdfTextOptionsSchema,
+    "docx": pdfTextOptionsSchema,
+    "jpg": pdfImageOptionsSchema,
+    "png": pdfImageOptionsSchema,
+    "txt": pdfTextOptionsSchema,
+  },
+  "png": {
+    "jpg": imageQualityOptionsSchema,
+    "webp": imageQualityOptionsSchema,
+  },
+  "jpg": {
+    "webp": imageQualityOptionsSchema,
+  },
+  "jpeg": {
+    "webp": imageQualityOptionsSchema,
+  },
+  "webp": {
+    "jpg": imageQualityOptionsSchema,
+  },
+  "gif": {
+    "mp4": emptyOptionsSchema,
+    "jpg": imageQualityOptionsSchema,
+  },
+  "mp4": {
+    "gif": videoGifOptionsSchema,
+    "mp3": audioBitrateOptionsSchema,
+  },
+  "mp3": {
+    "ogg": audioBitrateOptionsSchema,
+  },
+  "wav": {
+    "mp3": audioBitrateOptionsSchema,
+    "ogg": audioBitrateOptionsSchema,
+  },
+  "svg": {
+    "jpg": imageQualityOptionsSchema,
+  },
+  "bmp": {
+    "jpg": imageQualityOptionsSchema,
+  },
+  "tiff": {
+    "jpg": imageQualityOptionsSchema,
+  },
+};
+
+export function getConversionOptionsSchema(sourceFormat: string, targetFormat: string) {
+  return SUPPORTED_CONVERSION_OPTIONS[sourceFormat]?.[targetFormat] ?? emptyOptionsSchema;
+}
 
 export const SUPPORTED_FORMATS = Array.from(
   new Set(

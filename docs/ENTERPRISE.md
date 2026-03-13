@@ -354,31 +354,31 @@ Phased implementation plan for turning the current demo into a real file convers
 
 ### 8.1 Multi-file upload
 
-- [ ] Change Multer config in `server/routes.ts` to accept `upload.array("files", 20)`
-- [ ] Create a `batches` table: `id`, `userId`, `status`, `totalJobs`, `completedJobs`, `failedJobs`, `createdAt`
-- [ ] `POST /api/batch` accepts multiple files, creates a batch record, enqueues all conversion jobs
-- [ ] `GET /api/batch/:id` returns batch status and individual job statuses
-- [ ] `GET /api/batch/:id/download` returns a ZIP of all completed output files
+- [x] Change Multer config in `server/routes.ts` to accept `upload.array("files", 20)`
+- [x] Create a `batches` table: `id`, `userId`, `status`, `totalJobs`, `completedJobs`, `failedJobs`, `createdAt`
+- [x] `POST /api/batch` accepts multiple files, creates a batch record, enqueues all conversion jobs
+- [x] `GET /api/batch/:id` returns batch status and individual job statuses
+- [x] `GET /api/batch/:id/download` returns a ZIP of all completed output files
 
 ### 8.2 Saved conversion presets
 
-- [ ] Add `presets` table: `id`, `userId`, `name`, `sourceFormat`, `targetFormat`, `options` (JSON), `createdAt`
-- [ ] `POST /api/presets` — save a preset
-- [ ] `GET /api/presets` — list user's presets
-- [ ] `DELETE /api/presets/:id` — delete a preset
-- [ ] Accept `presetId` on `POST /api/convert` to apply saved options
+- [x] Add `presets` table: `id`, `userId`, `name`, `sourceFormat`, `targetFormat`, `options` (JSON), `createdAt`
+- [x] `POST /api/presets` — save a preset
+- [x] `GET /api/presets` — list user's presets
+- [x] `DELETE /api/presets/:id` — delete a preset
+- [x] Accept `presetId` on `POST /api/convert` to apply saved options
 
 ### 8.3 Job re-run
 
-- [ ] `POST /api/convert/:id/retry` — re-enqueue a failed job using the original input file
-- [ ] Only available while input file has not been deleted (within retention window)
+- [x] `POST /api/convert/:id/retry` — re-enqueue a failed job using the original input file
+- [x] Only available while input file has not been deleted (within retention window)
 
 ### 8.4 Conversion options
 
-- [ ] Extend `SUPPORTED_CONVERSIONS` in `shared/schema.ts` to include per-route options schema (e.g., image quality, PDF page range, audio bitrate)
-- [ ] Accept `options` JSON field on `POST /api/convert`
-- [ ] Pass options through to converter adapters
-- [ ] Validate options against per-route schema on intake
+- [x] Extend `SUPPORTED_CONVERSIONS` in `shared/schema.ts` to include per-route options schema (e.g., image quality, PDF page range, audio bitrate)
+- [x] Accept `options` JSON field on `POST /api/convert`
+- [x] Pass options through to converter adapters
+- [x] Validate options against per-route schema on intake
 
 ---
 

@@ -105,14 +105,31 @@ async function notifySettledConversion(
   }
 }
 
+async function syncBatchIfNeeded(batchId: number | null | undefined) {
+  if (!batchId) {
+    return;
+  }
+
+  try {
+    await storage.syncBatch(batchId);
+  } catch (error) {
+    console.error(`Failed to sync batch ${batchId}`, error);
+  }
+}
+
 export async function expireConversionRecord(
   conversion: Conversion,
   activeStorage: IStorage = storage,
 ) {
+  const batchId = conversion.batchId;
+  await safeDeleteStoredFile(conversion.inputKey);
   await safeDeleteStoredFile(
     conversion.outputFilename ? getOutputObjectKey(conversion.outputFilename) : null,
   );
   await activeStorage.deleteConversion(conversion.id);
+  if (batchId) {
+    await activeStorage.syncBatch(batchId);
+  }
 }
 
 export async function expireConversionById(
@@ -136,19 +153,21 @@ export async function expireConversionById(
 
 export async function processQueuedConversion({
   conversionId,
-  inputKey,
+  inputKey: payloadInputKey,
   sourceFormat,
   targetFormat,
 }: ConversionJobPayload, options?: ProcessQueuedConversionOptions) {
   const conversion = await storage.getConversion(conversionId).catch(async (error) => {
-    await safeDeleteStoredFile(inputKey);
+    await safeDeleteStoredFile(payloadInputKey);
     throw error;
   });
 
   if (!conversion) {
-    await safeDeleteStoredFile(inputKey);
+    await safeDeleteStoredFile(payloadInputKey);
     return;
   }
+
+  const inputKey = conversion.inputKey ?? payloadInputKey;
 
   if (conversion.expiresAt && conversion.expiresAt.getTime() <= Date.now()) {
     await safeDeleteStoredFile(inputKey);
@@ -157,7 +176,16 @@ export async function processQueuedConversion({
   }
 
   if (conversion.status === "completed" || conversion.status === "failed") {
-    await safeDeleteStoredFile(inputKey);
+    return;
+  }
+
+  if (!inputKey) {
+    const failedConversion = await storage.updateConversion(conversionId, {
+      resultMessage: "Failed to convert: original input file is unavailable.",
+      status: "failed",
+    });
+    await syncBatchIfNeeded(conversion.batchId);
+    await notifySettledConversion(failedConversion, "conversion.failed", options);
     return;
   }
 
@@ -177,12 +205,12 @@ export async function processQueuedConversion({
       resultMessage: formatProcessingMessage(sourceFormat, targetFormat),
       status: "processing",
     });
+    await syncBatchIfNeeded(conversion.batchId);
 
     await filestore.get(inputKey, workspace.inputPath);
-    await adapter.convert(workspace.inputPath, workspace.outputPath);
+    await adapter.convert(workspace.inputPath, workspace.outputPath, conversion.options ?? undefined);
     await validateOutputFile(workspace.outputPath, targetFormat);
     await filestore.save(workspace.outputPath, outputKey);
-    await safeDeleteStoredFile(inputKey);
 
     const convertedSize = fs.statSync(workspace.outputPath).size;
     const completedConversion = await storage.updateConversion(conversionId, {
@@ -206,9 +234,9 @@ export async function processQueuedConversion({
       }
     }
 
+    await syncBatchIfNeeded(conversion.batchId);
     await notifySettledConversion(completedConversion, "conversion.completed", options);
   } catch (error) {
-    await safeDeleteStoredFile(inputKey);
     await safeDeleteStoredFile(outputKey);
 
     const failedConversion = await storage.updateConversion(conversionId, {
@@ -219,6 +247,7 @@ export async function processQueuedConversion({
       status: "failed",
     });
 
+    await syncBatchIfNeeded(conversion.batchId);
     await notifySettledConversion(failedConversion, "conversion.failed", options);
   } finally {
     safeUnlink(workspace?.inputPath);

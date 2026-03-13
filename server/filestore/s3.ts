@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { GetObjectCommand, PutObjectCommand, DeleteObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { FileStore } from "./index";
 
@@ -81,6 +81,20 @@ export class S3FileStore implements FileStore {
       console.info(`[filestore/s3] Deleted: ${key}`);
     } catch (error) {
       throw new Error(`S3 delete failed for ${key}: ${(error as Error).message}`);
+    }
+  }
+
+  async exists(key: string) {
+    try {
+      await this.client.send(
+        new HeadObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+        }),
+      );
+      return true;
+    } catch {
+      return false;
     }
   }
 
