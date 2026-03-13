@@ -7,11 +7,13 @@ import { v4 as uuidv4 } from "uuid";
 import type { Conversion } from "@shared/schema";
 import { SUPPORTED_CONVERSIONS } from "@shared/schema";
 import { VISITOR_ID_HEADER, isValidVisitorId } from "@shared/visitor";
-import type { RegisteredConverterAdapter } from "./converters";
-import { ConversionError } from "./converters";
-import { registry } from "./converters/registry";
-import { validateOutputFile } from "./converters/validation";
 import { FILE_TTL_MS, OUTPUT_DIR, UPLOAD_DIR, ensureWorkingDirectories, safeUnlink } from "./files";
+import { expireConversionRecord, formatQueuedMessage } from "./conversion-jobs";
+import {
+  enqueueConversionJob,
+  scheduleConversionExpiryJob,
+  startQueueServerRuntime,
+} from "./queue";
 import { storage } from "./storage";
 
 function getFirstValue(value: string | string[] | undefined): string | undefined {
@@ -38,33 +40,6 @@ function getVisitorId(req: Request, res: Response): string | undefined {
   return visitorId;
 }
 
-async function expireConversion(conversion: Conversion) {
-  safeUnlink(
-    conversion.outputFilename ? path.join(OUTPUT_DIR, conversion.outputFilename) : null,
-  );
-  await storage.deleteConversion(conversion.id);
-}
-
-function formatSuccessMessage(sourceFormat: string, targetFormat: string) {
-  return `Converted .${sourceFormat} to .${targetFormat}.`;
-}
-
-function formatFailureMessage(
-  error: unknown,
-  sourceFormat: string,
-  targetFormat: string,
-) {
-  if (error instanceof ConversionError) {
-    return error.message;
-  }
-
-  if (error instanceof Error && error.message) {
-    return `Failed to convert .${sourceFormat} to .${targetFormat}: ${error.message}`;
-  }
-
-  return `Failed to convert .${sourceFormat} to .${targetFormat}.`;
-}
-
 ensureWorkingDirectories();
 
 const upload = multer({
@@ -88,51 +63,13 @@ const upload = multer({
   },
 });
 
-async function processConversion({
-  adapter,
-  conversionId,
-  filePath,
-  outputFilename,
-  outputPath,
-  sourceFormat,
-  targetFormat,
-}: {
-  adapter: RegisteredConverterAdapter;
-  conversionId: number;
-  filePath: string;
-  outputFilename: string;
-  outputPath: string;
-  sourceFormat: string;
-  targetFormat: string;
-}) {
-  try {
-    await adapter.convert(filePath, outputPath);
-    await validateOutputFile(outputPath, targetFormat);
-
-    safeUnlink(filePath);
-
-    const convertedSize = fs.statSync(outputPath).size;
-    await storage.updateConversion(conversionId, {
-      convertedSize,
-      outputFilename,
-      resultMessage: formatSuccessMessage(sourceFormat, targetFormat),
-      status: "completed",
-    });
-  } catch (error) {
-    safeUnlink(filePath);
-    safeUnlink(outputPath);
-
-    await storage.updateConversion(conversionId, {
-      convertedSize: null,
-      outputFilename: null,
-      resultMessage: formatFailureMessage(error, sourceFormat, targetFormat),
-      status: "failed",
-    });
-  }
-}
-
-export async function registerRoutes(_httpServer: Server, app: Express) {
+export async function registerRoutes(httpServer: Server, app: Express) {
   ensureWorkingDirectories();
+  await startQueueServerRuntime(httpServer, {
+    onError: (error) => {
+      console.error("Queue runtime failed:", error);
+    },
+  });
 
   app.get("/api/formats", (_req: Request, res: Response) => {
     res.json(SUPPORTED_CONVERSIONS);
@@ -144,6 +81,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       safeUnlink(req.file?.path);
       return;
     }
+
+    let conversion: Conversion | null = null;
 
     try {
       const file = req.file;
@@ -167,31 +106,25 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       }
 
       const expiresAt = new Date(Date.now() + FILE_TTL_MS);
-      const outputFilename = `${uuidv4()}.${targetFormat}`;
-      const outputPath = path.join(OUTPUT_DIR, outputFilename);
-      const processingStartedAt = new Date();
-      const adapter = registry.getAdapter(sourceFormat, targetFormat);
 
-      const conversion = await storage.createConversion({
+      conversion = await storage.createConversion({
         originalName: file.originalname,
         originalFormat: sourceFormat,
         targetFormat,
-        status: "processing",
+        status: "pending",
         fileSize: file.size,
         outputFilename: null,
-        processingStartedAt,
-        engineUsed: adapter.engineName,
-        resultMessage: `Converting .${sourceFormat} to .${targetFormat}.`,
+        processingStartedAt: null,
+        engineUsed: null,
+        resultMessage: formatQueuedMessage(sourceFormat, targetFormat),
         visitorId,
         expiresAt,
       });
 
-      void processConversion({
-        adapter,
+      await scheduleConversionExpiryJob({ conversionId: conversion.id }, expiresAt);
+      await enqueueConversionJob({
         conversionId: conversion.id,
-        filePath: file.path,
-        outputFilename,
-        outputPath,
+        inputPath: file.path,
         sourceFormat,
         targetFormat,
       });
@@ -199,6 +132,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       return res.status(201).json(serializeConversion(conversion));
     } catch (err: unknown) {
       safeUnlink(req.file?.path);
+      if (conversion) {
+        await storage.deleteConversion(conversion.id);
+      }
       const error = err as Error;
       return res.status(500).json({ error: error.message || "Conversion failed." });
     }
@@ -222,7 +158,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
 
     if (conversion.expiresAt && conversion.expiresAt.getTime() <= Date.now()) {
-      await expireConversion(conversion);
+      await expireConversionRecord(conversion);
       return res.status(404).json({ error: "Conversion expired." });
     }
 
@@ -246,7 +182,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
 
     if (conversion.expiresAt && conversion.expiresAt.getTime() <= Date.now()) {
-      await expireConversion(conversion);
+      await expireConversionRecord(conversion);
       return res.status(404).json({ error: "Download expired." });
     }
 

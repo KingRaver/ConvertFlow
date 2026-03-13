@@ -3,7 +3,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
-import { runStartupMaintenance, startExpiredConversionCleanup } from "./maintenance";
+import { runStartupMaintenance } from "./maintenance";
 
 try { (process as NodeJS.Process & { loadEnvFile?: () => void }).loadEnvFile?.(); } catch { /* no .env file in production */ }
 
@@ -71,12 +71,6 @@ app.use((req, res, next) => {
   if (maintenance.cleaned > 0) {
     log(`deleted ${maintenance.cleaned} expired job(s)`, "maintenance");
   }
-
-  startExpiredConversionCleanup({
-    onError: (error) => {
-      console.error("Expired conversion cleanup failed:", error);
-    },
-  });
 
   await registerRoutes(httpServer, app);
 

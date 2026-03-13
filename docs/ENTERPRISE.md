@@ -155,43 +155,43 @@ Phased implementation plan for turning the current demo into a real file convers
 
 ### 3.1 Choose and install a queue
 
-- [ ] Install `bullmq` and `ioredis` (requires Redis), or `pg-boss` (uses existing PostgreSQL, no new infra)
-- [ ] If using `pg-boss`: add to `server/db.ts`, schedule starts alongside the Express server
-- [ ] If using `bullmq`: add Redis connection config to `.env`
+- [x] Install `pg-boss` (uses existing PostgreSQL, no new infra)
+- [x] Wire queue startup into the server lifecycle with a memory fallback for local/test runs
+- [x] Redis config is not needed because Phase 3 uses `pg-boss`, not `bullmq`
 
 ### 3.2 Queue producer
 
-- [ ] In `server/routes.ts` `POST /api/convert` handler:
+- [x] In `server/routes.ts` `POST /api/convert` handler:
   - Create the job record with `status: "pending"` (not `"processing"`)
   - Enqueue a job with payload `{ conversionId, inputPath, sourceFormat, targetFormat }`
   - Return 201 immediately without `await`ing conversion
 
 ### 3.3 Queue worker
 
-- [ ] Create `server/worker.ts` as a separate entry point
-- [ ] Worker subscribes to the conversion queue
-- [ ] On each job:
+- [x] Create `server/worker.ts` as a separate entry point
+- [x] Worker subscribes to family-specific conversion queues
+- [x] On each job:
   1. Load conversion record from storage
   2. Set `status: "processing"`, `processingStartedAt: now`
   3. Call `registry.getAdapter(sourceFormat, targetFormat).convert(inputPath, outputPath)`
   4. On success: update `status: "completed"`, `outputFilename`, `convertedSize`, `engineUsed`
   5. On failure: update `status: "failed"`, `resultMessage` with error detail
   6. Delete input file
-  7. Schedule output file deletion at `expiresAt`
-- [ ] Add worker startup to `package.json` scripts: `"worker": "tsx server/worker.ts"`
+  7. Schedule expiry cleanup via the queue using the job `expiresAt`
+- [x] Add worker startup to `package.json` scripts: `"worker": "tsx server/worker.ts"`
 
 ### 3.4 Expiry worker
 
-- [ ] Add a recurring job (every 10 minutes) that:
+- [x] Add a recurring job (every 10 minutes) that:
   - Queries conversions where `expiresAt < now`
   - Deletes output files from disk
   - Hard-deletes conversion records
-- [ ] This replaces the `setInterval` sweep in `server/routes.ts`
+- [x] Replace the old interval-based expiry sweep with queue-driven cleanup jobs
 
 ### 3.5 Concurrency and limits
 
-- [ ] Set worker concurrency per format family (image jobs can run 4 parallel; document jobs 2; video jobs 1)
-- [ ] Add a job timeout at the queue level matching the per-converter timeout
+- [x] Set worker concurrency per format family (image jobs can run 4 parallel; document jobs 2; video jobs 1)
+- [x] Add a job timeout at the queue level matching the per-converter timeout
 
 ---
 

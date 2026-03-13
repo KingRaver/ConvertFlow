@@ -9,7 +9,6 @@ import {
   sweepDirectory,
 } from "./files";
 
-const EXPIRED_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 const STALE_PROCESSING_WINDOW_MS = 5 * 60 * 1000;
 
 export const STALE_PROCESSING_MESSAGE = "Server restarted during processing.";
@@ -54,42 +53,4 @@ export async function runStartupMaintenance(activeStorage: IStorage = storage, n
   const cleaned = await runCleanupPass(activeStorage, now);
 
   return { cleaned, recovered };
-}
-
-export function startExpiredConversionCleanup(options?: {
-  onError?: (error: unknown) => void;
-  storage?: IStorage;
-}) {
-  const activeStorage = options?.storage ?? storage;
-  const onError = options?.onError ?? ((error: unknown) => console.error(error));
-
-  ensureWorkingDirectories();
-
-  let running = false;
-  const run = async () => {
-    if (running) {
-      return;
-    }
-
-    running = true;
-    try {
-      await runCleanupPass(activeStorage);
-    } catch (error) {
-      onError(error);
-    } finally {
-      running = false;
-    }
-  };
-
-  const timer = setInterval(() => {
-    void run();
-  }, EXPIRED_SWEEP_INTERVAL_MS);
-
-  timer.unref?.();
-
-  return {
-    stop() {
-      clearInterval(timer);
-    },
-  };
 }

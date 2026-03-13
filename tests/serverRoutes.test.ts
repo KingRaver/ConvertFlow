@@ -4,6 +4,7 @@ import express from "express";
 import { createServer } from "node:http";
 import { registerRoutes } from "../server/routes";
 import { VISITOR_ID_HEADER } from "../shared/visitor";
+import { storage } from "../server/storage";
 
 const VISITOR_A = "cf_55555555-5555-4555-8555-555555555555";
 const VISITOR_B = "cf_66666666-6666-4666-8666-666666666666";
@@ -100,7 +101,7 @@ async function waitForSettledJob(baseUrl: string, visitorId: string, conversionI
     const json = (await response.json()) as {
       engineUsed?: string | null;
       outputFilename?: string | null;
-      status: "processing" | "completed" | "failed";
+      status: "pending" | "processing" | "completed" | "failed";
     };
 
     if (json.status === "completed" || json.status === "failed") {
@@ -155,6 +156,41 @@ test("route handlers scope job status and history to the current visitor", async
   assert.equal(foreignHistoryJson.length, 0);
 });
 
+test("queued uploads return pending immediately before the worker settles them", async (t) => {
+  const server = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new File([Buffer.from("ConvertFlow route test\n")], "sample.txt", { type: "text/plain" }),
+  );
+  formData.append("targetFormat", "docx");
+
+  const response = await fetch(`${server.baseUrl}/api/convert`, {
+    method: "POST",
+    headers: {
+      [VISITOR_ID_HEADER]: VISITOR_A,
+    },
+    body: formData,
+  });
+
+  assert.equal(response.status, 201);
+
+  const created = (await response.json()) as {
+    id: number;
+    processingStartedAt: string | null;
+    resultMessage: string | null;
+    status: "pending" | "processing" | "completed" | "failed";
+  };
+
+  assert.equal(created.status, "pending");
+  assert.equal(created.processingStartedAt, null);
+  assert.equal(created.resultMessage, "Queued .txt to .docx conversion.");
+});
+
 test("completed jobs expose a real visitor-scoped download", async (t) => {
   const server = await startServer();
   t.after(async () => {
@@ -184,4 +220,60 @@ test("completed jobs expose a real visitor-scoped download", async (t) => {
     },
   });
   assert.equal(foreignDownload.status, 404);
+});
+
+test("failed jobs expose their error status but no downloadable output", async (t) => {
+  const server = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  // createDemoJob sends "%PDF-demo" — not a real PDF, so pdf→docx will fail
+  const created = await createDemoJob(server.baseUrl, VISITOR_A);
+  const status = await waitForSettledJob(server.baseUrl, VISITOR_A, created.id);
+
+  assert.equal(status.status, "failed");
+  assert.equal(status.outputFilename, null);
+
+  const download = await fetch(`${server.baseUrl}/api/download/nonexistent.docx`, {
+    headers: { [VISITOR_ID_HEADER]: VISITOR_A },
+  });
+  assert.equal(download.status, 404);
+});
+
+test("GET /api/convert/:id returns 404 and cleans up an expired conversion", async (t) => {
+  const server = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  // Insert an already-expired record directly into the shared MemStorage singleton.
+  const expired = await storage.createConversion({
+    originalName: "old.txt",
+    originalFormat: "txt",
+    targetFormat: "docx",
+    status: "completed",
+    fileSize: 10,
+    convertedSize: 10,
+    outputFilename: null,
+    processingStartedAt: null,
+    engineUsed: null,
+    resultMessage: "Done",
+    visitorId: VISITOR_A,
+    expiresAt: new Date(Date.now() - 1_000),
+  });
+
+  const response = await fetch(`${server.baseUrl}/api/convert/${expired.id}`, {
+    headers: { [VISITOR_ID_HEADER]: VISITOR_A },
+  });
+  assert.equal(response.status, 404);
+  const body = await response.json() as { error: string };
+  assert.equal(body.error, "Conversion expired.");
+
+  // The route should have deleted the record.
+  assert.equal(
+    await storage.getConversion(expired.id),
+    undefined,
+    "expired record should be deleted from storage",
+  );
 });
