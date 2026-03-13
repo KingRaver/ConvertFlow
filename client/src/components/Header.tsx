@@ -1,23 +1,28 @@
+import { ArrowLeftRight, Moon, Sun } from "lucide-react";
 import { Link, useLocation } from "wouter";
-import { useTheme } from "./ThemeProvider";
-import { Sun, Moon, ArrowLeftRight } from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
+import { useTheme } from "./ThemeProvider";
 
 export default function Header() {
   const { theme, toggleTheme } = useTheme();
+  const { isAuthenticated, logout, user } = useAuth();
   const [location] = useLocation();
 
   return (
-    <header className="sticky top-0 z-50 w-full border-b border-border/60 bg-background/80 backdrop-blur-xl" data-testid="header">
+    <header
+      className="sticky top-0 z-50 w-full border-b border-border/60 bg-background/80 backdrop-blur-xl"
+      data-testid="header"
+    >
       <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
-        <Link href="/" className="flex items-center gap-2 group" data-testid="link-home">
-          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-primary text-primary-foreground">
-            <ArrowLeftRight className="w-4 h-4" />
+        <Link href="/" className="group flex items-center gap-2" data-testid="link-home">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+            <ArrowLeftRight className="h-4 w-4" />
           </div>
           <span className="text-base font-semibold tracking-tight">ConvertFlow</span>
         </Link>
 
-        <nav className="hidden sm:flex items-center gap-1" data-testid="nav-main">
+        <nav className="hidden items-center gap-1 sm:flex" data-testid="nav-main">
           <Link href="/">
             <Button
               variant={location === "/" ? "secondary" : "ghost"}
@@ -48,18 +53,59 @@ export default function Header() {
               Access
             </Button>
           </Link>
+          {isAuthenticated && (
+            <Link href="/history">
+              <Button
+                variant={location === "/history" ? "secondary" : "ghost"}
+                size="sm"
+                className="text-sm"
+                data-testid="nav-history"
+              >
+                History
+              </Button>
+            </Link>
+          )}
         </nav>
 
         <div className="flex items-center gap-2">
+          {isAuthenticated ? (
+            <>
+              <span className="hidden text-xs text-muted-foreground md:inline-flex">
+                {user?.email}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void logout()}
+                data-testid="button-logout"
+              >
+                Log out
+              </Button>
+            </>
+          ) : (
+            <>
+              <Link href="/login">
+                <Button variant="ghost" size="sm" data-testid="button-login">
+                  Sign in
+                </Button>
+              </Link>
+              <Link href="/register">
+                <Button size="sm" data-testid="button-register">
+                  Create account
+                </Button>
+              </Link>
+            </>
+          )}
+
           <Button
             variant="ghost"
             size="sm"
             onClick={toggleTheme}
             aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
             data-testid="button-theme-toggle"
-            className="w-8 h-8 p-0"
+            className="h-8 w-8 p-0"
           >
-            {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
         </div>
       </div>

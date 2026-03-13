@@ -1,15 +1,128 @@
+import { clearStoredAuthToken, getStoredAuthToken } from "./auth";
 import { getVisitorHeaders } from "./visitor";
 
 const API_BASE = "";
 
-export interface ConversionResponse {
+export interface AuthUser {
+  createdAt: string | null;
+  email: string;
   id: number;
-  status: "pending" | "processing" | "completed" | "failed";
-  outputFilename: string | null;
+  role: "user" | "admin";
+}
+
+export interface AuthResponse {
+  token: string;
+  user: AuthUser;
+}
+
+export interface ConversionResponse {
   convertedSize?: number | null;
-  resultMessage?: string | null;
+  createdAt?: string | null;
+  engineUsed?: string | null;
   expiresAt?: string | null;
+  fileSize?: number;
+  id: number;
+  originalFormat?: string;
+  originalName?: string;
+  outputFilename: string | null;
   processingStartedAt?: string | null;
+  resultMessage?: string | null;
+  status: "pending" | "processing" | "completed" | "failed";
+  targetFormat?: string;
+}
+
+export interface ConversionListResponse {
+  items: ConversionResponse[];
+  limit: number;
+  page: number;
+  total: number;
+  totalPages: number;
+}
+
+function buildHeaders(extraHeaders?: HeadersInit) {
+  const headers = new Headers(getVisitorHeaders());
+  const token = getStoredAuthToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  if (extraHeaders) {
+    new Headers(extraHeaders).forEach((value, key) => {
+      headers.set(key, value);
+    });
+  }
+
+  return headers;
+}
+
+async function readErrorMessage(res: Response, fallback: string) {
+  const errorBody = await res.json().catch(() => ({ error: fallback }));
+  return errorBody.error || fallback;
+}
+
+export async function registerUser(email: string, password: string): Promise<AuthResponse> {
+  const res = await fetch(`${API_BASE}/api/auth/register`, {
+    method: "POST",
+    headers: buildHeaders({
+      "Content-Type": "application/json",
+    }),
+    body: JSON.stringify({ email, password }),
+  });
+
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res, "Registration failed."));
+  }
+
+  return res.json();
+}
+
+export async function loginUser(email: string, password: string): Promise<AuthResponse> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: buildHeaders({
+      "Content-Type": "application/json",
+    }),
+    body: JSON.stringify({ email, password }),
+  });
+
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res, "Login failed."));
+  }
+
+  return res.json();
+}
+
+export async function getCurrentUser(): Promise<AuthUser> {
+  const res = await fetch(`${API_BASE}/api/auth/me`, {
+    headers: buildHeaders(),
+  });
+
+  if (res.status === 401) {
+    clearStoredAuthToken();
+    throw new Error("Authentication required.");
+  }
+
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res, "Failed to load account."));
+  }
+
+  return res.json();
+}
+
+export async function logoutUser(): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/auth/logout`, {
+    method: "POST",
+    headers: buildHeaders(),
+  });
+
+  if (res.status === 401) {
+    clearStoredAuthToken();
+    return;
+  }
+
+  if (!res.ok) {
+    throw new Error(await readErrorMessage(res, "Logout failed."));
+  }
 }
 
 export async function uploadAndConvert(
@@ -22,13 +135,12 @@ export async function uploadAndConvert(
 
   const res = await fetch(`${API_BASE}/api/convert`, {
     method: "POST",
-    headers: getVisitorHeaders(),
+    headers: buildHeaders(),
     body: formData,
   });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Upload failed." }));
-    throw new Error(err.error || "Upload failed.");
+    throw new Error(await readErrorMessage(res, "Upload failed."));
   }
 
   return res.json();
@@ -36,25 +148,46 @@ export async function uploadAndConvert(
 
 export async function checkConversionStatus(id: number): Promise<ConversionResponse> {
   const res = await fetch(`${API_BASE}/api/convert/${id}`, {
-    headers: getVisitorHeaders(),
+    headers: buildHeaders(),
   });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Failed to check status." }));
-    throw new Error(err.error || "Failed to check status.");
+    throw new Error(await readErrorMessage(res, "Failed to check status."));
   }
 
   return res.json();
 }
 
-export async function getConversions(): Promise<ConversionResponse[]> {
-  const res = await fetch(`${API_BASE}/api/conversions`, {
-    headers: getVisitorHeaders(),
-  });
+export async function getConversions(options?: {
+  format?: string;
+  limit?: number;
+  page?: number;
+  status?: string;
+}): Promise<ConversionListResponse> {
+  const searchParams = new URLSearchParams();
+  if (options?.page) {
+    searchParams.set("page", String(options.page));
+  }
+  if (options?.limit) {
+    searchParams.set("limit", String(options.limit));
+  }
+  if (options?.status) {
+    searchParams.set("status", options.status);
+  }
+  if (options?.format) {
+    searchParams.set("format", options.format);
+  }
+
+  const queryString = searchParams.toString();
+  const res = await fetch(
+    `${API_BASE}/api/conversions${queryString ? `?${queryString}` : ""}`,
+    {
+      headers: buildHeaders(),
+    },
+  );
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Failed to fetch conversions." }));
-    throw new Error(err.error || "Failed to fetch conversions.");
+    throw new Error(await readErrorMessage(res, "Failed to fetch conversions."));
   }
 
   return res.json();
@@ -69,12 +202,11 @@ export async function fetchDownloadBlob(
   fetchImpl: typeof fetch = fetch,
 ): Promise<Blob> {
   const res = await fetchImpl(url, {
-    headers: getVisitorHeaders(),
+    headers: buildHeaders(),
   });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Download failed." }));
-    throw new Error(err.error || "Download failed.");
+    throw new Error(await readErrorMessage(res, "Download failed."));
   }
 
   return res.blob();

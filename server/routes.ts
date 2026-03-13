@@ -2,14 +2,40 @@ import type { Express, NextFunction, Request, Response } from "express";
 import type { Server } from "http";
 import multer from "multer";
 import path from "path";
+import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
-import type { Conversion } from "@shared/schema";
-import { SUPPORTED_CONVERSIONS } from "@shared/schema";
+import {
+  CONVERSION_STATUSES,
+  type Conversion,
+  type ConversionStatus,
+  SUPPORTED_CONVERSIONS,
+  SUPPORTED_FORMATS,
+} from "@shared/schema";
 import { VISITOR_ID_HEADER, isValidVisitorId } from "@shared/visitor";
-import { FILE_TTL_MS, UPLOAD_TMP_DIR, ensureWorkingDirectories, safeUnlink } from "./files";
-import { filestore, getDownloadFilename, getOutputObjectKey, getUploadObjectKey } from "./filestore";
-import { getLocalPathFromDownloadKey, parseLocalDownloadParams } from "./filestore/local";
+import {
+  createSessionExpiry,
+  createSessionToken,
+  hashPassword,
+  MIN_PASSWORD_LENGTH,
+  normalizeEmail,
+  verifyPassword,
+} from "./auth";
 import { expireConversionRecord, formatQueuedMessage } from "./conversion-jobs";
+import {
+  FILE_TTL_MS,
+  UPLOAD_TMP_DIR,
+  ensureWorkingDirectories,
+  safeUnlink,
+} from "./files";
+import {
+  filestore,
+  getDownloadFilename,
+  getOutputObjectKey,
+  getUploadObjectKey,
+} from "./filestore";
+import { getLocalPathFromDownloadKey, parseLocalDownloadParams } from "./filestore/local";
+import { optionalAuth, requireAuth } from "./middleware/auth";
+import { createRateLimiter } from "./middleware/rateLimit";
 import {
   enqueueConversionJob,
   scheduleConversionExpiryJob,
@@ -17,28 +43,134 @@ import {
 } from "./queue";
 import { storage } from "./storage";
 
+const authCredentialsSchema = z.object({
+  email: z.string().trim().email("A valid email address is required.").transform(normalizeEmail),
+  password: z
+    .string()
+    .min(MIN_PASSWORD_LENGTH, `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`),
+});
+
+const historyQuerySchema = z.object({
+  format: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .optional()
+    .refine((value) => value === undefined || SUPPORTED_FORMATS.includes(value), {
+      message: "Format filter must use a supported file format.",
+    }),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  page: z.coerce.number().int().min(1).default(1),
+  status: z.enum(CONVERSION_STATUSES).optional(),
+});
+
+type ConversionOwner =
+  | { scope: "user"; userId: number }
+  | { scope: "visitor"; visitorId: string };
+
 function getFirstValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
+function getValidationMessage(error: z.ZodError) {
+  return error.issues[0]?.message ?? "Invalid request.";
+}
+
 function serializeConversion(conversion: Conversion) {
   return {
-    ...conversion,
+    id: conversion.id,
+    originalName: conversion.originalName,
+    originalFormat: conversion.originalFormat,
+    targetFormat: conversion.targetFormat,
+    status: conversion.status,
+    fileSize: conversion.fileSize,
+    convertedSize: conversion.convertedSize,
+    outputFilename: conversion.outputFilename,
+    resultMessage: conversion.resultMessage,
+    engineUsed: conversion.engineUsed,
     expiresAt: conversion.expiresAt?.toISOString() ?? null,
     createdAt: conversion.createdAt?.toISOString() ?? null,
     processingStartedAt: conversion.processingStartedAt?.toISOString() ?? null,
   };
 }
 
-function getVisitorId(req: Request, res: Response): string | undefined {
-  const visitorId = getFirstValue(req.header(VISITOR_ID_HEADER));
+function serializeUser(user: {
+  createdAt: Date | null;
+  email: string;
+  id: number;
+  role: string;
+}) {
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    createdAt: user.createdAt?.toISOString() ?? null,
+  };
+}
 
+function getOptionalVisitorId(req: Request): string | null {
+  const visitorId = getFirstValue(req.header(VISITOR_ID_HEADER));
   if (!isValidVisitorId(visitorId)) {
+    return null;
+  }
+
+  return visitorId;
+}
+
+function requireVisitorId(req: Request, res: Response): string | undefined {
+  const visitorId = getOptionalVisitorId(req);
+  if (!visitorId) {
     res.status(400).json({ error: "A valid visitor id is required." });
     return undefined;
   }
 
   return visitorId;
+}
+
+function getUploadOwner(req: Request, res: Response) {
+  if (req.user) {
+    return {
+      userId: req.user.id,
+      visitorId: getOptionalVisitorId(req),
+    };
+  }
+
+  const visitorId = requireVisitorId(req, res);
+  if (!visitorId) {
+    return undefined;
+  }
+
+  return {
+    userId: null,
+    visitorId,
+  };
+}
+
+function getReadOwner(req: Request, res: Response): ConversionOwner | undefined {
+  if (req.user) {
+    return {
+      scope: "user",
+      userId: req.user.id,
+    };
+  }
+
+  const visitorId = requireVisitorId(req, res);
+  if (!visitorId) {
+    return undefined;
+  }
+
+  return {
+    scope: "visitor",
+    visitorId,
+  };
+}
+
+function canAccessConversion(conversion: Conversion, owner: ConversionOwner) {
+  if (conversion.userId !== null) {
+    return owner.scope === "user" && conversion.userId === owner.userId;
+  }
+
+  return owner.scope === "visitor" && conversion.visitorId === owner.visitorId;
 }
 
 ensureWorkingDirectories();
@@ -65,6 +197,11 @@ const upload = multer({
 });
 
 export async function registerRoutes(httpServer: Server, app: Express) {
+  const authRateLimit = createRateLimiter(
+    10,
+    15 * 60 * 1000,
+    "Too many attempts. Please try again later.",
+  );
   ensureWorkingDirectories();
   await startQueueServerRuntime(httpServer, {
     onError: (error) => {
@@ -76,9 +213,67 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     res.json(SUPPORTED_CONVERSIONS);
   });
 
-  app.post("/api/convert", upload.single("file"), async (req: Request, res: Response) => {
-    const visitorId = getVisitorId(req, res);
-    if (!visitorId) {
+  app.post("/api/auth/register", authRateLimit, async (req: Request, res: Response) => {
+    const parsed = authCredentialsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: getValidationMessage(parsed.error) });
+    }
+
+    const existingUser = await storage.getUserByEmail(parsed.data.email);
+    if (existingUser) {
+      return res.status(409).json({ error: "An account already exists for that email." });
+    }
+
+    const passwordHash = await hashPassword(parsed.data.password);
+    const { user, session } = await storage.createUserWithSession(
+      { email: parsed.data.email, passwordHash, role: "user" },
+      { userId: 0, token: createSessionToken(), expiresAt: createSessionExpiry() },
+    );
+
+    return res.status(201).json({
+      token: session.token,
+      user: serializeUser(user),
+    });
+  });
+
+  app.post("/api/auth/login", authRateLimit, async (req: Request, res: Response) => {
+    const parsed = authCredentialsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: getValidationMessage(parsed.error) });
+    }
+
+    const user = await storage.getUserByEmail(parsed.data.email);
+    if (!user || !(await verifyPassword(parsed.data.password, user.passwordHash))) {
+      return res.status(401).json({ error: "Invalid email or password." });
+    }
+
+    const session = await storage.createSession({
+      userId: user.id,
+      token: createSessionToken(),
+      expiresAt: createSessionExpiry(),
+    });
+
+    return res.json({
+      token: session.token,
+      user: serializeUser(user),
+    });
+  });
+
+  app.post("/api/auth/logout", requireAuth, async (req: Request, res: Response) => {
+    if (req.authToken) {
+      await storage.deleteSessionByToken(req.authToken);
+    }
+
+    return res.status(204).end();
+  });
+
+  app.get("/api/auth/me", requireAuth, (req: Request, res: Response) => {
+    return res.json(serializeUser(req.user!));
+  });
+
+  app.post("/api/convert", optionalAuth, upload.single("file"), async (req: Request, res: Response) => {
+    const owner = getUploadOwner(req, res);
+    if (!owner) {
       safeUnlink(req.file?.path);
       return;
     }
@@ -92,7 +287,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         return res.status(400).json({ error: "No file uploaded." });
       }
 
-      const targetFormat = req.body.targetFormat?.toLowerCase();
+      const targetFormat = getFirstValue(req.body.targetFormat)?.toLowerCase();
       if (!targetFormat) {
         safeUnlink(file.path);
         return res.status(400).json({ error: "Target format is required." });
@@ -122,7 +317,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         processingStartedAt: null,
         engineUsed: null,
         resultMessage: formatQueuedMessage(sourceFormat, targetFormat),
-        visitorId,
+        userId: owner.userId,
+        visitorId: owner.visitorId,
         expiresAt,
       });
 
@@ -152,9 +348,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
   });
 
-  app.get("/api/convert/:id", async (req: Request, res: Response) => {
-    const visitorId = getVisitorId(req, res);
-    if (!visitorId) {
+  app.get("/api/convert/:id", optionalAuth, async (req: Request, res: Response) => {
+    const owner = getReadOwner(req, res);
+    if (!owner) {
       return;
     }
 
@@ -165,7 +361,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
 
     const conversion = await storage.getConversion(id);
-    if (!conversion || conversion.visitorId !== visitorId) {
+    if (!conversion || !canAccessConversion(conversion, owner)) {
       return res.status(404).json({ error: "Conversion not found." });
     }
 
@@ -200,9 +396,9 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     });
   });
 
-  app.get("/api/download/:filename", async (req: Request, res: Response) => {
-    const visitorId = getVisitorId(req, res);
-    if (!visitorId) {
+  app.get("/api/download/:filename", optionalAuth, async (req: Request, res: Response) => {
+    const owner = getReadOwner(req, res);
+    if (!owner) {
       return;
     }
 
@@ -212,7 +408,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
 
     const conversion = await storage.getConversionByOutputFilename(filename);
-    if (!conversion || conversion.visitorId !== visitorId) {
+    if (!conversion || !canAccessConversion(conversion, owner)) {
       return res.status(404).json({ error: "Download not found." });
     }
 
@@ -229,15 +425,40 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     return res.redirect(downloadUrl);
   });
 
-  app.get("/api/conversions", async (req: Request, res: Response) => {
-    const visitorId = getVisitorId(req, res);
-    if (!visitorId) {
+  app.get("/api/conversions", optionalAuth, async (req: Request, res: Response) => {
+    const parsedQuery = historyQuerySchema.safeParse({
+      format: getFirstValue(req.query.format as string | string[] | undefined),
+      limit: getFirstValue(req.query.limit as string | string[] | undefined),
+      page: getFirstValue(req.query.page as string | string[] | undefined),
+      status: getFirstValue(req.query.status as string | string[] | undefined) as
+        | ConversionStatus
+        | undefined,
+    });
+
+    if (!parsedQuery.success) {
+      return res.status(400).json({ error: getValidationMessage(parsedQuery.error) });
+    }
+
+    const scope = req.user
+      ? { userId: req.user.id }
+      : { visitorId: requireVisitorId(req, res) };
+
+    if ("visitorId" in scope && !scope.visitorId) {
       return;
     }
 
-    const conversions = await storage.getConversionsByVisitor(visitorId);
+    const result = await storage.listConversions({
+      ...parsedQuery.data,
+      ...scope,
+    });
 
-    return res.json(conversions.map((conversion) => serializeConversion(conversion)));
+    return res.json({
+      items: result.items.map((conversion) => serializeConversion(conversion)),
+      limit: result.limit,
+      page: result.page,
+      total: result.total,
+      totalPages: Math.ceil(result.total / result.limit),
+    });
   });
 
   app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {

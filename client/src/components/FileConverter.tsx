@@ -347,7 +347,7 @@ export default function FileConverter({ presetFrom, presetTo }: FileConverterPro
             <p className="text-sm text-muted-foreground mb-4 text-center">
               {isPresetRoute
                 ? `This route only accepts .${presetFrom} files and converts them to .${presetTo}.`
-                : "Convert documents, images, audio, video, and data files with visitor-scoped job tracking."}
+                : "Convert documents, images, audio, video, and data files with guest or account-backed job tracking."}
             </p>
             <div className="flex flex-wrap gap-1.5 justify-center">
               {(isPresetRoute
@@ -427,8 +427,8 @@ export default function FileConverter({ presetFrom, presetTo }: FileConverterPro
       )}
 
       <p className="mt-3 text-xs text-muted-foreground text-center">
-        Uploads are visitor-scoped, source files are deleted after processing, and completed jobs
-        expire automatically.
+        Uploads can stay guest-scoped or account-scoped, source files are deleted after processing,
+        and completed jobs expire automatically.
       </p>
     </div>
   );

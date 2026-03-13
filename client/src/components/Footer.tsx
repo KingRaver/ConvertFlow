@@ -15,7 +15,7 @@ export default function Footer() {
               <span className="text-sm font-semibold">ConvertFlow</span>
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed max-w-[200px]">
-              Visitor-scoped file conversions with temporary output retention. No signup required.
+              Guest or account-backed file conversions with temporary output retention.
             </p>
           </div>
 

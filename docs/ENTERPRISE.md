@@ -239,40 +239,40 @@ Phased implementation plan for turning the current demo into a real file convers
 
 ### 5.1 Auth schema
 
-- [ ] Add to `shared/schema.ts`:
+- [x] Add to `shared/schema.ts`:
   - `users` table: `id`, `email`, `passwordHash`, `createdAt`, `role` (`user|admin`)
   - `sessions` table: `id`, `userId`, `token`, `expiresAt`, `createdAt`
-- [ ] Add `userId` (nullable) to `conversions` table — keep `visitorId` for unauthenticated users
-- [ ] Run migrations
+- [x] Add `userId` (nullable) to `conversions` table — keep `visitorId` for unauthenticated users
+- [x] Run migrations
 
 ### 5.2 Auth endpoints
 
-- [ ] `POST /api/auth/register` — hash password with `bcrypt`, create user, return session token
-- [ ] `POST /api/auth/login` — verify password, create session, return token
-- [ ] `POST /api/auth/logout` — delete session
-- [ ] `GET /api/auth/me` — return current user from session token
+- [x] `POST /api/auth/register` — hash password securely, create user, return session token
+- [x] `POST /api/auth/login` — verify password, create session, return token
+- [x] `POST /api/auth/logout` — delete session
+- [x] `GET /api/auth/me` — return current user from session token
 
 ### 5.3 Auth middleware
 
-- [ ] Create `server/middleware/auth.ts`:
+- [x] Create `server/middleware/auth.ts`:
   - `requireAuth` — validates `Authorization: Bearer <token>` header, attaches `req.user`
   - `optionalAuth` — same but does not reject unauthenticated requests
-- [ ] Apply `optionalAuth` to `POST /api/convert` — if user is authenticated, attach `userId` to the job
-- [ ] Apply `requireAuth` to any account-specific routes
+- [x] Apply `optionalAuth` to `POST /api/convert` — if user is authenticated, attach `userId` to the job
+- [x] Apply `requireAuth` to any account-specific routes
 
 ### 5.4 Conversion history per user
 
-- [ ] `GET /api/conversions` — if authenticated, return by `userId`; if not, return by `visitorId` (existing behavior)
-- [ ] Add pagination: `?page=1&limit=20`
-- [ ] Add filtering: `?status=completed`, `?format=pdf`
+- [x] `GET /api/conversions` — if authenticated, return by `userId`; if not, return by `visitorId` (existing behavior)
+- [x] Add pagination: `?page=1&limit=20`
+- [x] Add filtering: `?status=completed`, `?format=pdf`
 
 ### 5.5 Frontend auth
 
-- [ ] Add login and register pages in `client/src/pages/`
-- [ ] Add auth state to a React context (`client/src/context/AuthContext.tsx`)
-- [ ] Store session token in `localStorage`
-- [ ] Send `Authorization` header in `client/src/lib/api.ts` when token is present
-- [ ] Show conversion history in a protected `/history` page
+- [x] Add login and register pages in `client/src/pages/`
+- [x] Add auth state to a React context (`client/src/context/AuthContext.tsx`)
+- [x] Store session token in `localStorage`
+- [x] Send `Authorization` header in `client/src/lib/api.ts` when token is present
+- [x] Show conversion history in a protected `/history` page
 
 ---
 

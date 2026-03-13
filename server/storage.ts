@@ -1,29 +1,77 @@
-import type { Conversion, InsertConversion } from "@shared/schema";
+import type {
+  Conversion,
+  ConversionStatus,
+  InsertConversion,
+  InsertSession,
+  InsertUser,
+  Session,
+  User,
+} from "@shared/schema";
 import { hasDatabaseUrl } from "./db";
 import { DrizzleStorage } from "./storage/drizzle";
+
+export interface ConversionListOptions {
+  format?: string;
+  limit: number;
+  page: number;
+  status?: ConversionStatus;
+  userId?: number;
+  visitorId?: string;
+}
+
+export interface PaginatedConversions {
+  items: Conversion[];
+  limit: number;
+  page: number;
+  total: number;
+}
 
 export interface IStorage {
   createConversion(conversion: InsertConversion): Promise<Conversion>;
   getConversion(id: number): Promise<Conversion | undefined>;
   getConversionByOutputFilename(outputFilename: string): Promise<Conversion | undefined>;
   updateConversion(id: number, updates: Partial<Conversion>): Promise<Conversion | undefined>;
-  getConversionsByVisitor(visitorId: string): Promise<Conversion[]>;
+  listConversions(options: ConversionListOptions): Promise<PaginatedConversions>;
   getExpiredConversions(now: Date): Promise<Conversion[]>;
   failStaleProcessingJobs(cutoff: Date, resultMessage: string): Promise<number>;
   deleteConversion(id: number): Promise<void>;
+  createUser(user: InsertUser): Promise<User>;
+  createUserWithSession(user: InsertUser, session: InsertSession): Promise<{ session: Session; user: User }>;
+  getUserByEmail(email: string): Promise<User | undefined>;
+  getUserById(id: number): Promise<User | undefined>;
+  createSession(session: InsertSession): Promise<Session>;
+  getSessionByToken(token: string): Promise<Session | undefined>;
+  deleteSessionByToken(token: string): Promise<void>;
+}
+
+function sortConversionsByNewest(left: Conversion, right: Conversion) {
+  const createdDelta = (right.createdAt?.getTime() ?? 0) - (left.createdAt?.getTime() ?? 0);
+  if (createdDelta !== 0) {
+    return createdDelta;
+  }
+
+  return right.id - left.id;
 }
 
 export class MemStorage implements IStorage {
   private conversions: Map<number, Conversion>;
-  private nextId: number;
+  private nextConversionId: number;
+  private nextSessionId: number;
+  private nextUserId: number;
+  private sessions: Map<number, Session>;
+  private users: Map<number, User>;
 
   constructor() {
     this.conversions = new Map();
-    this.nextId = 1;
+    this.users = new Map();
+    this.sessions = new Map();
+    this.nextConversionId = 1;
+    this.nextUserId = 1;
+    this.nextSessionId = 1;
   }
 
   async createConversion(data: InsertConversion): Promise<Conversion> {
-    const id = this.nextId++;
+    const id = this.nextConversionId++;
     const conversion: Conversion = {
       id,
       originalName: data.originalName,
@@ -34,7 +82,8 @@ export class MemStorage implements IStorage {
       convertedSize: data.convertedSize ?? null,
       outputFilename: data.outputFilename ?? null,
       resultMessage: data.resultMessage ?? null,
-      visitorId: data.visitorId,
+      visitorId: data.visitorId ?? null,
+      userId: data.userId ?? null,
       processingStartedAt: data.processingStartedAt ?? null,
       engineUsed: data.engineUsed ?? null,
       createdAt: new Date(),
@@ -69,10 +118,47 @@ export class MemStorage implements IStorage {
     return updated;
   }
 
-  async getConversionsByVisitor(visitorId: string): Promise<Conversion[]> {
-    return Array.from(this.conversions.values())
-      .filter((c) => c.visitorId === visitorId)
-      .sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0));
+  async listConversions(options: ConversionListOptions): Promise<PaginatedConversions> {
+    const filtered = Array.from(this.conversions.values())
+      .filter((conversion) => {
+        if (options.userId !== undefined) {
+          return conversion.userId === options.userId;
+        }
+
+        if (options.visitorId !== undefined) {
+          return conversion.visitorId === options.visitorId;
+        }
+
+        return false;
+      })
+      .filter((conversion) => {
+        if (!options.status) {
+          return true;
+        }
+
+        return conversion.status === options.status;
+      })
+      .filter((conversion) => {
+        if (!options.format) {
+          return true;
+        }
+
+        return (
+          conversion.originalFormat === options.format ||
+          conversion.targetFormat === options.format
+        );
+      })
+      .sort(sortConversionsByNewest);
+
+    const startIndex = (options.page - 1) * options.limit;
+    const items = filtered.slice(startIndex, startIndex + options.limit);
+
+    return {
+      items,
+      limit: options.limit,
+      page: options.page,
+      total: filtered.length,
+    };
   }
 
   async getExpiredConversions(now: Date): Promise<Conversion[]> {
@@ -104,6 +190,61 @@ export class MemStorage implements IStorage {
 
   async deleteConversion(id: number): Promise<void> {
     this.conversions.delete(id);
+  }
+
+  async createUserWithSession(userData: InsertUser, sessionData: InsertSession): Promise<{ session: Session; user: User }> {
+    const user = await this.createUser(userData);
+    const session = await this.createSession({ ...sessionData, userId: user.id });
+    return { session, user };
+  }
+
+  async createUser(data: InsertUser): Promise<User> {
+    const id = this.nextUserId++;
+    const user: User = {
+      id,
+      email: data.email,
+      passwordHash: data.passwordHash,
+      role: data.role ?? "user",
+      createdAt: new Date(),
+    };
+
+    this.users.set(id, user);
+    return user;
+  }
+
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    return Array.from(this.users.values()).find((user) => user.email === email);
+  }
+
+  async getUserById(id: number): Promise<User | undefined> {
+    return this.users.get(id);
+  }
+
+  async createSession(data: InsertSession): Promise<Session> {
+    const id = this.nextSessionId++;
+    const session: Session = {
+      id,
+      userId: data.userId,
+      token: data.token,
+      expiresAt: data.expiresAt,
+      createdAt: new Date(),
+    };
+
+    this.sessions.set(id, session);
+    return session;
+  }
+
+  async getSessionByToken(token: string): Promise<Session | undefined> {
+    return Array.from(this.sessions.values()).find((session) => session.token === token);
+  }
+
+  async deleteSessionByToken(token: string): Promise<void> {
+    const existing = Array.from(this.sessions.entries()).find(([, session]) => session.token === token);
+    if (!existing) {
+      return;
+    }
+
+    this.sessions.delete(existing[0]);
   }
 }
 

@@ -83,7 +83,7 @@ export default function ConvertPage() {
           Convert {fromFormat.toUpperCase()} to {toFormatMapped.toUpperCase()}
         </h1>
         <p className="text-sm text-muted-foreground max-w-lg mx-auto">
-          Upload a {fromFormat.toUpperCase()} file, track the visitor-scoped job, and download the
+          Upload a {fromFormat.toUpperCase()} file, track the queued job, and download the
           converted {toFormatMapped.toUpperCase()} output when processing completes.
         </p>
       </div>

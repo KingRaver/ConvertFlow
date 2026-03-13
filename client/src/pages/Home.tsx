@@ -67,14 +67,14 @@ export default function Home() {
         <div className="mx-auto max-w-6xl px-4 sm:px-6 pt-16 pb-12 sm:pt-24 sm:pb-16">
           <div className="text-center mb-10">
             <Badge variant="secondary" className="mb-4 text-xs font-normal px-3 py-1">
-              Real conversions &middot; No signup required
+              Real conversions &middot; Guest or account
             </Badge>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight mb-3" data-testid="text-hero-title">
               Convert Files Across Formats
             </h1>
             <p className="text-sm sm:text-base text-muted-foreground max-w-2xl mx-auto leading-relaxed">
               Upload a file, let the backend run the matching converter, and download the finished
-              output from the same visitor-scoped job flow.
+              output with either guest tracking or account history.
             </p>
           </div>
 
@@ -114,7 +114,7 @@ export default function Home() {
         <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16">
           <h2 className="text-lg font-semibold text-center mb-2">What This Build Delivers</h2>
           <p className="text-sm text-muted-foreground text-center mb-10">
-            The current app ships real conversion engines while keeping the same lightweight visitor flow.
+            The current app ships real conversion engines with both guest uploads and account-backed history.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {FEATURES.map((feature) => (

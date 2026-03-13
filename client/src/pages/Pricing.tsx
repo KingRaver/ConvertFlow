@@ -15,7 +15,7 @@ const CARDS = [
       "Visitor-scoped job tracking",
       "50MB upload cap",
       "Automatic cleanup and expiry",
-      "No signup required",
+      "Guest uploads or account history",
     ],
     cta: "Open Converter",
     href: "/",

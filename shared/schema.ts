@@ -1,6 +1,27 @@
-import { pgTable, text, serial, integer, timestamp } from "drizzle-orm/pg-core";
+import { integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+
+export const USER_ROLES = ["user", "admin"] as const;
+export type UserRole = typeof USER_ROLES[number];
+
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  email: text("email").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  role: text("role").notNull().default("user"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const sessions = pgTable("sessions", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  token: text("token").notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
 
 export const conversions = pgTable("conversions", {
   id: serial("id").primaryKey(),
@@ -12,7 +33,8 @@ export const conversions = pgTable("conversions", {
   convertedSize: integer("converted_size"),
   outputFilename: text("output_filename"),
   resultMessage: text("result_message"),
-  visitorId: text("visitor_id").notNull(),
+  visitorId: text("visitor_id"),
+  userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
   processingStartedAt: timestamp("processing_started_at"),
   engineUsed: text("engine_used"),
   createdAt: timestamp("created_at").defaultNow(),
@@ -23,11 +45,24 @@ export const insertConversionSchema = createInsertSchema(conversions).omit({
   id: true,
   createdAt: true,
 });
+export const insertUserSchema = createInsertSchema(users).omit({
+  id: true,
+  createdAt: true,
+});
+export const insertSessionSchema = createInsertSchema(sessions).omit({
+  id: true,
+  createdAt: true,
+});
 
 export type InsertConversion = z.infer<typeof insertConversionSchema>;
+export type InsertSession = z.infer<typeof insertSessionSchema>;
+export type InsertUser = z.infer<typeof insertUserSchema>;
 export type Conversion = typeof conversions.$inferSelect;
+export type Session = typeof sessions.$inferSelect;
+export type User = typeof users.$inferSelect;
 
-export type ConversionStatus = "pending" | "processing" | "completed" | "failed";
+export const CONVERSION_STATUSES = ["pending", "processing", "completed", "failed"] as const;
+export type ConversionStatus = typeof CONVERSION_STATUSES[number];
 
 // Supported format conversions
 export const SUPPORTED_CONVERSIONS: Record<string, string[]> = {
@@ -49,6 +84,15 @@ export const SUPPORTED_CONVERSIONS: Record<string, string[]> = {
   "bmp": ["png", "jpg"],
   "tiff": ["png", "jpg"],
 };
+
+export const SUPPORTED_FORMATS = Array.from(
+  new Set(
+    Object.entries(SUPPORTED_CONVERSIONS).flatMap(([sourceFormat, targetFormats]) => [
+      sourceFormat,
+      ...targetFormats,
+    ]),
+  ),
+).sort();
 
 export const FORMAT_CATEGORIES: Record<string, { label: string; formats: string[]; icon: string }> = {
   "documents": { label: "Documents", formats: ["pdf", "docx", "doc", "txt"], icon: "FileText" },
