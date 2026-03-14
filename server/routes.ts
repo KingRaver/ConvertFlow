@@ -60,8 +60,14 @@ import {
 } from "./limits";
 import { optionalApiAuth, requireAuth } from "./middleware/auth";
 import { createRateLimiter } from "./middleware/rateLimit";
+import { getHealthStatus } from "./observability/health";
+import { getRequestLogger, getLogger, requestLogger } from "./observability/logger";
+import { getMetricsContentType, renderMetrics, setQueueMetrics } from "./observability/metrics";
+import { requireMonitoringAccess } from "./observability/monitoring";
+import { captureException } from "./observability/sentry";
 import {
   enqueueConversionJob,
+  getQueueMetricSamples,
   scheduleConversionExpiryJob,
   startQueueServerRuntime,
 } from "./queue";
@@ -177,6 +183,7 @@ const OPENAPI_SPEC_PATHS = [
   path.resolve(process.cwd(), "docs/openapi.yaml"),
   path.resolve(process.cwd(), "dist/docs/openapi.yaml"),
 ];
+const routesLogger = getLogger({ component: "routes" });
 
 type ConversionOwner =
   | { scope: "user"; userId: number }
@@ -672,6 +679,26 @@ function cleanupUploadedFiles(files: Array<Express.Multer.File | null | undefine
   }
 }
 
+function logQueuedConversion(
+  req: Request,
+  conversion: Pick<
+    Conversion,
+    "fileSize" | "id" | "status" | "targetFormat" | "userId" | "visitorId"
+  > & { originalFormat?: string },
+  sourceFormat: string,
+  targetFormat: string,
+) {
+  getRequestLogger(req).info({
+    conversionId: conversion.id,
+    fileSize: conversion.fileSize,
+    sourceFormat,
+    status: conversion.status,
+    targetFormat,
+    userId: conversion.userId,
+    visitorId: conversion.visitorId,
+  }, "Conversion queued");
+}
+
 function requireUserContext(req: Request, res: Response) {
   if (!req.user) {
     res.status(401).json({ error: "Authentication required." });
@@ -756,6 +783,8 @@ async function buildBatchArchive(conversions: Conversion[]) {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express) {
+  app.use(requestLogger);
+
   const authRateLimit = createRateLimiter(
     10,
     15 * 60 * 1000,
@@ -764,8 +793,28 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   ensureWorkingDirectories();
   await startQueueServerRuntime(httpServer, {
     onError: (error) => {
-      console.error("Queue runtime failed:", error);
+      routesLogger.error({ err: error }, "Queue runtime failed");
+      captureException(error, {
+        tags: {
+          component: "routes",
+        },
+      });
     },
+  });
+
+  app.get("/api/health", async (_req: Request, res: Response) => {
+    const health = await getHealthStatus();
+    return res.status(health.status === "ok" ? 200 : 503).json(health);
+  });
+
+  app.get("/metrics", requireMonitoringAccess, async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      setQueueMetrics(await getQueueMetricSamples());
+      res.type(getMetricsContentType());
+      return res.send(await renderMetrics());
+    } catch (error) {
+      return next(error);
+    }
   });
 
   app.get("/api/formats", (_req: Request, res: Response) => {
@@ -1211,6 +1260,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           sourceFormat: resolvedRequests[index]!.sourceFormat,
           targetFormat: resolvedRequests[index]!.targetFormat,
         });
+        logQueuedConversion(
+          req,
+          conversion,
+          resolvedRequests[index]!.sourceFormat,
+          resolvedRequests[index]!.targetFormat,
+        );
       }
 
       const syncedBatch = await storage.syncBatch(batch.id) ?? batch;
@@ -1238,7 +1293,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           try {
             await filestore.delete(inputKey);
           } catch (deleteError) {
-            console.error(`Failed to delete uploaded object: ${inputKey}`, deleteError);
+            getRequestLogger(req).error({ err: deleteError, inputKey }, "Failed to delete uploaded object");
           }
         }),
       );
@@ -1248,12 +1303,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           try {
             await storage.deleteConversion(conversion.id);
           } catch (deleteError) {
-            console.error(`Failed to delete conversion record ${conversion.id}`, deleteError);
+            getRequestLogger(req).error({ conversionId: conversion.id, err: deleteError }, "Failed to delete conversion record");
           }
         }),
         ...(batch
           ? [storage.deleteBatch(batch.id).catch((deleteError: unknown) => {
-              console.error(`Failed to delete batch record ${batch!.id}`, deleteError);
+              getRequestLogger(req).error({ batchId: batch!.id, err: deleteError }, "Failed to delete batch record");
             })]
           : []),
       ]);
@@ -1320,7 +1375,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         try {
           await archive.cleanup();
         } catch (cleanupError) {
-          console.error(`Failed to clean up batch archive workspace for batch ${id}`, cleanupError);
+          getRequestLogger(req).error({ batchId: id, err: cleanupError }, "Failed to clean up batch archive workspace");
         }
 
         if (!error) {
@@ -1435,6 +1490,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         sourceFormat,
         targetFormat,
       });
+      logQueuedConversion(req, conversion, sourceFormat, targetFormat);
 
       if (idempotencyKeyHash && requestHash) {
         await storage.createIdempotencyKey({
@@ -1456,7 +1512,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         try {
           await filestore.delete(inputKey);
         } catch (deleteError) {
-          console.error(`Failed to delete uploaded object: ${inputKey}`, deleteError);
+          getRequestLogger(req).error({ err: deleteError, inputKey }, "Failed to delete uploaded object");
         }
       }
       if (conversion) {
@@ -1565,6 +1621,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         sourceFormat: retried.originalFormat,
         targetFormat: retried.targetFormat,
       });
+      logQueuedConversion(req, retried, retried.originalFormat, retried.targetFormat);
 
       return res.json(serializeConversion(retried));
     } catch (error) {

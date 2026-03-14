@@ -385,3 +385,57 @@
 - `retrying a non-failed conversion returns 409` — pending → 409; completed → 409
 
 ---
+
+## Phase 9 — Observability
+
+### Structured logging (`server/observability/logger.ts`)
+- Installed `pino` and `pino-http`
+- Root `pino` logger configured with ISO timestamps, `service` base field, and `LOG_LEVEL` env override (defaults to `debug` in development, `info` in production)
+- `getLogger(bindings)` creates child loggers bound to a `component` label; used throughout the server and worker
+- `requestLogger` (pino-http) middleware attached as the first handler in `registerRoutes()`:
+  - Generates or propagates `x-request-id` on every request, written back into the response header
+  - Logs `userId`, `visitorId`, `apiKeyId`, `authType`, and `requestId` on every request/response pair
+  - Log level auto-selected by status code: `error` for 5xx/uncaught errors, `warn` for 4xx, `info` otherwise
+- All `console.log`/`console.error` calls replaced with structured logger calls throughout `server/`
+
+### Metrics (`server/observability/metrics.ts`)
+- Installed `prom-client`
+- Dedicated `Registry` (not the global default) prevents metric re-registration across test server instances
+- Instruments:
+  - `convertflow_conversion_total` counter — labels: `route`, `status`
+  - `convertflow_conversion_processing_duration_seconds` histogram — label: `route`; buckets from 50ms to 60s
+  - `convertflow_file_size_bytes` histogram — labels: `direction` (`input`|`output`), `route`; buckets from 1KB to 500MB
+  - `convertflow_queue_depth` gauge — labels: `queue`, `runtime`
+  - `convertflow_active_workers` gauge — labels: `queue`, `runtime`
+  - Default Node.js process metrics (via `collectDefaultMetrics`)
+- `recordConversionResult()` called at all three terminal paths in `processQueuedConversion`: missing input, success, and error catch
+- `GET /metrics` calls `setQueueMetrics(await getQueueMetricSamples())` at scrape time so queue stats are always current
+
+### Health checks (`server/observability/health.ts`)
+- `getHealthStatus()` runs three checks in parallel: DB (`pool.query("select 1")`), queue (`getQueueHealthStatus()`), storage (`filestore.checkHealth()`)
+- Overall `status` is `"ok"` only when all three components report `"ok"`
+- `GET /api/health` returns 200 on success, 503 on any component failure
+
+### Monitoring access control (`server/observability/monitoring.ts`)
+- `GET /metrics` is restricted via `requireMonitoringAccess` middleware
+- Access granted if: `MONITORING_TOKEN` matches `Authorization: Bearer <token>` or `x-monitoring-token` header; OR `MONITORING_TOKEN` is unset and the request comes from a private IP (RFC 1918 + loopback + link-local); OR `NODE_ENV` is not `production`
+- IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) are normalized before the private-IP check
+
+### Error tracking (`server/observability/sentry.ts`)
+- Installed `@sentry/node`
+- `initSentry(service)` initializes from `SENTRY_DSN` env var; no-ops silently if unset
+- Attaches `unhandledRejection` and `uncaughtExceptionMonitor` process handlers (guarded against duplicate attachment across module reloads)
+- `captureException(error, context)` enriches events with tags, extras, and named contexts before sending
+- `flushSentry(timeoutMs)` drains the Sentry send buffer on graceful shutdown
+- `initSentry("convertflow-api")` called in `server/index.ts`; `initSentry("convertflow-worker")` called in `server/worker.ts`
+- Converter errors captured in `processQueuedConversion` with full conversion context; unhandled request errors captured in the Express global error handler; startup failures captured with a `component` tag before `process.exit(1)`
+
+### Environment config
+- Added `LOG_LEVEL`, `MONITORING_TOKEN`, and `SENTRY_DSN` to `.env.example`
+
+### Tests (`tests/observabilityRoutes.test.ts`)
+- `GET /api/health returns component health for the running service` — asserts 200 and `{status:"ok", db:"ok", queue:"ok", storage:"ok"}`
+- `GET /metrics exposes conversion and queue metrics after a job completes` — submits a real txt→docx job, waits for completion, asserts Prometheus response contains `convertflow_conversion_total` with `route="txt->docx",status="completed"` and `convertflow_queue_depth`
+- `GET /metrics requires the monitoring token when configured` — sets `MONITORING_TOKEN` env var, asserts unauthenticated request returns 401, request with correct `x-monitoring-token` header returns 200
+
+---

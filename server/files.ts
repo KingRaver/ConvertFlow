@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
+import { getLogger } from "./observability/logger";
 
 export const UPLOAD_DIR = path.join(process.cwd(), "uploads");
 export const UPLOAD_TMP_DIR = path.join(UPLOAD_DIR, "_tmp");
 export const OUTPUT_DIR = path.join(process.cwd(), "outputs");
 export const FILE_TTL_MS = 30 * 60 * 1000;
+const fileLogger = getLogger({ component: "files" });
 
 export function ensureWorkingDirectories() {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -22,7 +24,7 @@ export function safeUnlink(filePath: string | null | undefined) {
   } catch (error: unknown) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code !== "ENOENT") {
-      console.error(`Failed to remove file: ${filePath}`, error);
+      fileLogger.error({ err: error, filePath }, "Failed to remove file");
     }
   }
 }
@@ -46,7 +48,7 @@ export function sweepDirectory(dir: string, ttlMs = FILE_TTL_MS) {
         safeUnlink(entryPath);
       }
     } catch (error) {
-      console.error(`Failed to inspect file during sweep: ${entryPath}`, error);
+      fileLogger.error({ dir, entryPath, err: error }, "Failed to inspect file during sweep");
     }
   }
 }

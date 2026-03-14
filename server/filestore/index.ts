@@ -1,6 +1,9 @@
 import path from "node:path";
 import { LocalFileStore } from "./local";
 import { S3FileStore } from "./s3";
+import { getLogger } from "../observability/logger";
+
+const filestoreLogger = getLogger({ component: "filestore" });
 
 export interface FileStore {
   readonly driver: "local" | "s3";
@@ -8,6 +11,7 @@ export interface FileStore {
   get(key: string, localPath: string): Promise<void>;
   delete(key: string): Promise<void>;
   exists(key: string): Promise<boolean>;
+  checkHealth(): Promise<void>;
   getDownloadUrl(key: string, filename: string): Promise<string>;
 }
 
@@ -40,4 +44,4 @@ export const filestore: FileStore = storageDriver === "s3"
   ? new S3FileStore()
   : new LocalFileStore();
 
-console.info(`[filestore] Storage driver: ${storageDriver}`);
+filestoreLogger.info({ storageDriver }, "Storage driver initialized");

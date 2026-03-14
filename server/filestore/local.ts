@@ -1,9 +1,12 @@
 import crypto from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { FileStore } from "./index";
+import { getLogger } from "../observability/logger";
 
 const DOWNLOAD_TTL_SECONDS = 15 * 60;
+const filestoreLogger = getLogger({ component: "filestore", driver: "local" });
 
 function getLocalSigningSecret() {
   const secret = process.env.LOCAL_FILESTORE_SIGNING_SECRET?.trim()
@@ -15,8 +18,8 @@ function getLocalSigningSecret() {
         "LOCAL_FILESTORE_SIGNING_SECRET (or SESSION_SECRET) must be set in production.",
       );
     }
-    console.warn(
-      "[filestore/local] Warning: LOCAL_FILESTORE_SIGNING_SECRET not set. Using insecure default. Set this variable before deploying.",
+    filestoreLogger.warn(
+      "LOCAL_FILESTORE_SIGNING_SECRET not set; using insecure default secret in non-production mode",
     );
     return "convertflow-local-filestore-secret";
   }
@@ -138,14 +141,14 @@ export class LocalFileStore implements FileStore {
     const destinationPath = getLocalPathForKey(key);
     await fs.mkdir(path.dirname(destinationPath), { recursive: true });
     await fs.copyFile(localPath, destinationPath);
-    console.info(`[filestore/local] Saved: ${key}`);
+    filestoreLogger.info({ key }, "Saved file");
   }
 
   async get(key: string, localPath: string) {
     const sourcePath = getLocalPathForKey(key);
     await fs.mkdir(path.dirname(localPath), { recursive: true });
     await fs.copyFile(sourcePath, localPath);
-    console.info(`[filestore/local] Retrieved: ${key}`);
+    filestoreLogger.info({ key }, "Retrieved file");
   }
 
   async delete(key: string) {
@@ -153,7 +156,7 @@ export class LocalFileStore implements FileStore {
 
     try {
       await fs.unlink(targetPath);
-      console.info(`[filestore/local] Deleted: ${key}`);
+      filestoreLogger.info({ key }, "Deleted file");
     } catch (error: unknown) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
       if (code !== "ENOENT") {
@@ -171,9 +174,16 @@ export class LocalFileStore implements FileStore {
     }
   }
 
+  async checkHealth() {
+    await Promise.all([
+      fs.access(path.join(process.cwd(), "uploads"), fsConstants.R_OK | fsConstants.W_OK),
+      fs.access(path.join(process.cwd(), "outputs"), fsConstants.R_OK | fsConstants.W_OK),
+    ]);
+  }
+
   async getDownloadUrl(key: string, filename: string) {
     const url = createLocalDownloadUrl(key, filename);
-    console.info(`[filestore/local] Generated download URL for: ${key}`);
+    filestoreLogger.info({ key }, "Generated download URL");
     return url;
   }
 }

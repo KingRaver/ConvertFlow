@@ -388,27 +388,27 @@ Phased implementation plan for turning the current demo into a real file convers
 
 ### 9.1 Structured logging
 
-- [ ] Install `pino` and `pino-http`
-- [ ] Replace all `console.log`/`console.error` with structured `logger` calls
-- [ ] Log fields: `conversionId`, `visitorId`/`userId`, `sourceFormat`, `targetFormat`, `fileSize`, `durationMs`, `engineUsed`, `status`
-- [ ] Add request logging middleware to Express
+- [x] Install `pino` and `pino-http`
+- [x] Replace all `console.log`/`console.error` with structured `logger` calls
+- [x] Log fields: `conversionId`, `visitorId`/`userId`, `sourceFormat`, `targetFormat`, `fileSize`, `durationMs`, `engineUsed`, `status`
+- [x] Add request logging middleware to Express
 
 ### 9.2 Metrics
 
-- [ ] Install `prom-client`
-- [ ] Instrument: conversion count by route and status, processing duration histogram by route, queue depth, active worker count, file sizes
-- [ ] Expose `GET /metrics` endpoint (restricted to internal/monitoring access)
+- [x] Install `prom-client`
+- [x] Instrument: conversion count by route and status, processing duration histogram by route, queue depth, active worker count, file sizes
+- [x] Expose `GET /metrics` endpoint (restricted to internal/monitoring access)
 
 ### 9.3 Health checks
 
-- [ ] `GET /api/health` — returns `{ status: "ok", db: "ok"|"error", queue: "ok"|"error", storage: "ok"|"error" }`
-- [ ] Used by load balancers and uptime monitors
+- [x] `GET /api/health` — returns `{ status: "ok", db: "ok"|"error", queue: "ok"|"error", storage: "ok"|"error" }`
+- [x] Used by load balancers and uptime monitors
 
 ### 9.4 Error tracking
 
-- [ ] Install `@sentry/node`
-- [ ] Initialize in `server/index.ts` with `SENTRY_DSN` from env
-- [ ] Capture unhandled exceptions, unhandled rejections, and converter errors with conversion context
+- [x] Install `@sentry/node`
+- [x] Initialize in `server/index.ts` with `SENTRY_DSN` from env
+- [x] Capture unhandled exceptions, unhandled rejections, and converter errors with conversion context
 
 ---
 
@@ -441,6 +441,8 @@ STRIPE_SECRET_KEY=
 STRIPE_WEBHOOK_SECRET=
 
 # Observability
+LOG_LEVEL=info
+MONITORING_TOKEN=
 SENTRY_DSN=
 ```
 

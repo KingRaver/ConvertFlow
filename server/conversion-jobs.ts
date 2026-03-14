@@ -9,6 +9,9 @@ import { registry } from "./converters/registry";
 import { validateOutputFile } from "./converters/validation";
 import { filestore, getOutputObjectKey } from "./filestore";
 import { safeUnlink } from "./files";
+import { recordConversionResult } from "./observability/metrics";
+import { getLogger } from "./observability/logger";
+import { captureException } from "./observability/sentry";
 import type { IStorage } from "./storage";
 import { storage } from "./storage";
 
@@ -25,6 +28,12 @@ export interface ExpiryJobPayload {
 
 interface ProcessQueuedConversionOptions {
   onSettled?: (conversion: Conversion, event: WebhookEventType) => Promise<void>;
+}
+
+const conversionLogger = getLogger({ component: "conversion-jobs" });
+
+function getRouteLabel(sourceFormat: string, targetFormat: string) {
+  return `${sourceFormat}->${targetFormat}`;
 }
 
 export function formatQueuedMessage(sourceFormat: string, targetFormat: string) {
@@ -63,7 +72,7 @@ async function safeDeleteStoredFile(key: string | null | undefined) {
   try {
     await filestore.delete(key);
   } catch (error) {
-    console.error(`Failed to delete stored object: ${key}`, error);
+    conversionLogger.error({ err: error, key }, "Failed to delete stored object");
   }
 }
 
@@ -85,7 +94,7 @@ async function cleanupWorkspace(dir: string | null) {
   try {
     await fsPromises.rm(dir, { force: true, recursive: true });
   } catch (error) {
-    console.error(`Failed to remove temp workspace: ${dir}`, error);
+    conversionLogger.error({ dir, err: error }, "Failed to remove temp workspace");
   }
 }
 
@@ -101,7 +110,7 @@ async function notifySettledConversion(
   try {
     await options.onSettled(conversion, event);
   } catch (error) {
-    console.error(`Failed to enqueue webhooks for conversion ${conversion.id}`, error);
+    conversionLogger.error({ conversionId: conversion.id, err: error, event }, "Failed to enqueue webhooks");
   }
 }
 
@@ -113,7 +122,7 @@ async function syncBatchIfNeeded(batchId: number | null | undefined) {
   try {
     await storage.syncBatch(batchId);
   } catch (error) {
-    console.error(`Failed to sync batch ${batchId}`, error);
+    conversionLogger.error({ batchId, err: error }, "Failed to sync batch");
   }
 }
 
@@ -157,6 +166,7 @@ export async function processQueuedConversion({
   sourceFormat,
   targetFormat,
 }: ConversionJobPayload, options?: ProcessQueuedConversionOptions) {
+  const route = getRouteLabel(sourceFormat, targetFormat);
   const conversion = await storage.getConversion(conversionId).catch(async (error) => {
     await safeDeleteStoredFile(payloadInputKey);
     throw error;
@@ -184,6 +194,21 @@ export async function processQueuedConversion({
       resultMessage: "Failed to convert: original input file is unavailable.",
       status: "failed",
     });
+    recordConversionResult({
+      durationMs: 0,
+      inputBytes: conversion.fileSize,
+      route,
+      status: "failed",
+    });
+    conversionLogger.error({
+      conversionId,
+      fileSize: conversion.fileSize,
+      sourceFormat,
+      status: "failed",
+      targetFormat,
+      userId: conversion.userId,
+      visitorId: conversion.visitorId,
+    }, "Conversion failed because the input file is unavailable");
     await syncBatchIfNeeded(conversion.batchId);
     await notifySettledConversion(failedConversion, "conversion.failed", options);
     return;
@@ -193,11 +218,23 @@ export async function processQueuedConversion({
   const outputKey = getOutputObjectKey(outputFilename);
   let engineUsed: string | null = conversion.engineUsed ?? null;
   let workspace: Awaited<ReturnType<typeof createJobWorkspace>> | null = null;
+  const startedAt = Date.now();
 
   try {
     const adapter = registry.getAdapter(sourceFormat, targetFormat);
     engineUsed = adapter.engineName;
     workspace = await createJobWorkspace(sourceFormat, targetFormat);
+
+    conversionLogger.info({
+      conversionId,
+      engineUsed,
+      fileSize: conversion.fileSize,
+      sourceFormat,
+      status: "processing",
+      targetFormat,
+      userId: conversion.userId,
+      visitorId: conversion.visitorId,
+    }, "Conversion started");
 
     await storage.updateConversion(conversionId, {
       engineUsed,
@@ -213,11 +250,20 @@ export async function processQueuedConversion({
     await filestore.save(workspace.outputPath, outputKey);
 
     const convertedSize = fs.statSync(workspace.outputPath).size;
+    const durationMs = Date.now() - startedAt;
     const completedConversion = await storage.updateConversion(conversionId, {
       convertedSize,
       engineUsed,
       outputFilename,
       resultMessage: formatSuccessMessage(sourceFormat, targetFormat),
+      status: "completed",
+    });
+
+    recordConversionResult({
+      durationMs,
+      inputBytes: conversion.fileSize,
+      outputBytes: convertedSize,
+      route,
       status: "completed",
     });
 
@@ -230,13 +276,26 @@ export async function processQueuedConversion({
           userId: conversion.userId,
         });
       } catch (usageError) {
-        console.error(`Failed to record usage for conversion ${conversionId}`, usageError);
+        conversionLogger.error({ conversionId, err: usageError }, "Failed to record usage");
       }
     }
+
+    conversionLogger.info({
+      conversionId,
+      durationMs,
+      engineUsed,
+      fileSize: conversion.fileSize,
+      sourceFormat,
+      status: "completed",
+      targetFormat,
+      userId: conversion.userId,
+      visitorId: conversion.visitorId,
+    }, "Conversion completed");
 
     await syncBatchIfNeeded(conversion.batchId);
     await notifySettledConversion(completedConversion, "conversion.completed", options);
   } catch (error) {
+    const durationMs = Date.now() - startedAt;
     await safeDeleteStoredFile(outputKey);
 
     const failedConversion = await storage.updateConversion(conversionId, {
@@ -245,6 +304,48 @@ export async function processQueuedConversion({
       outputFilename: null,
       resultMessage: formatFailureMessage(error, sourceFormat, targetFormat),
       status: "failed",
+    });
+
+    recordConversionResult({
+      durationMs,
+      inputBytes: conversion.fileSize,
+      route,
+      status: "failed",
+    });
+
+    conversionLogger.error({
+      conversionId,
+      durationMs,
+      engineUsed,
+      err: error,
+      fileSize: conversion.fileSize,
+      sourceFormat,
+      status: "failed",
+      targetFormat,
+      userId: conversion.userId,
+      visitorId: conversion.visitorId,
+    }, "Conversion failed");
+    captureException(error, {
+      contexts: {
+        conversion: {
+          conversionId,
+          durationMs,
+          engineUsed,
+          fileSize: conversion.fileSize,
+          sourceFormat,
+          status: "failed",
+          targetFormat,
+          userId: conversion.userId,
+          visitorId: conversion.visitorId,
+        },
+      },
+      extras: {
+        route,
+      },
+      tags: {
+        component: "conversion",
+        route,
+      },
     });
 
     await syncBatchIfNeeded(conversion.batchId);

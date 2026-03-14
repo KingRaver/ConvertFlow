@@ -16,7 +16,42 @@ tags:
   - name: API Keys
   - name: Webhooks
   - name: Docs
+  - name: Observability
 paths:
+  /api/health:
+    get:
+      tags: [Observability]
+      summary: Report API health
+      security: []
+      responses:
+        "200":
+          description: All core dependencies are healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "503":
+          description: One or more dependencies are unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /metrics:
+    get:
+      tags: [Observability]
+      summary: Expose Prometheus metrics for internal monitoring
+      description: Requires loopback/private network access or a monitoring token.
+      security:
+        - monitoringToken: []
+      responses:
+        "200":
+          description: Prometheus text exposition format
+          content:
+            text/plain:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Error"
   /api/formats:
     get:
       tags: [Conversions]
@@ -400,6 +435,11 @@ components:
       scheme: bearer
       bearerFormat: token
       description: Session token or API key with the `cf_` prefix.
+    monitoringToken:
+      type: apiKey
+      in: header
+      name: X-Monitoring-Token
+      description: Optional internal monitoring token for `/metrics`.
     visitorIdHeader:
       type: apiKey
       in: header
@@ -456,6 +496,22 @@ components:
         error:
           type: string
       required: [error]
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+        db:
+          type: string
+          enum: [ok, error]
+        queue:
+          type: string
+          enum: [ok, error]
+        storage:
+          type: string
+          enum: [ok, error]
+      required: [status, db, queue, storage]
     ApiKey:
       type: object
       properties:

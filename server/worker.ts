@@ -1,42 +1,42 @@
 import process from "node:process";
 import { runStartupMaintenance } from "./maintenance";
 import { startQueueWorkerRuntime } from "./queue";
+import { getLogger } from "./observability/logger";
+import { captureException, flushSentry, initSentry } from "./observability/sentry";
 
 try { (process as NodeJS.Process & { loadEnvFile?: () => void }).loadEnvFile?.(); } catch { /* no .env file in production */ }
 
-function log(message: string) {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    hour12: true,
-    minute: "2-digit",
-    second: "2-digit",
-  });
-
-  console.log(`${formattedTime} [worker] ${message}`);
-}
+const workerLogger = getLogger({ component: "worker" });
 
 async function main() {
+  initSentry("convertflow-worker");
   const maintenance = await runStartupMaintenance();
 
   if (maintenance.recovered > 0) {
-    log(`marked ${maintenance.recovered} stuck job(s) as failed`);
+    workerLogger.info({ recovered: maintenance.recovered }, "Marked stuck jobs as failed");
   }
 
   if (maintenance.cleaned > 0) {
-    log(`deleted ${maintenance.cleaned} expired job(s)`);
+    workerLogger.info({ cleaned: maintenance.cleaned }, "Deleted expired jobs");
   }
 
   const runtime = await startQueueWorkerRuntime({
     onError: (error) => {
-      console.error("Queue worker failed:", error);
+      workerLogger.error({ err: error }, "Queue worker failed");
+      captureException(error, {
+        tags: {
+          component: "worker",
+        },
+      });
     },
   });
 
-  log(`started ${runtime.kind} worker runtime`);
+  workerLogger.info({ runtime: runtime.kind }, "Queue worker runtime started");
 
   const shutdown = async (signal: string) => {
-    log(`received ${signal}, stopping worker`);
+    workerLogger.info({ signal }, "Stopping worker");
     await runtime.stop();
+    await flushSentry();
     process.exit(0);
   };
 
@@ -49,6 +49,11 @@ async function main() {
 }
 
 void main().catch((error) => {
-  console.error("Worker failed to start:", error);
+  workerLogger.error({ err: error }, "Worker failed to start");
+  captureException(error, {
+    tags: {
+      component: "worker",
+    },
+  });
   process.exit(1);
 });

@@ -2,6 +2,9 @@ import process from "node:process";
 import Stripe from "stripe";
 import type { User, UserPlan } from "@shared/schema";
 import { storage, type IStorage } from "./storage";
+import { getLogger } from "./observability/logger";
+
+const billingLogger = getLogger({ component: "billing" });
 
 export type PaidUserPlan = Exclude<UserPlan, "free">;
 
@@ -237,9 +240,10 @@ async function syncActiveSubscription(
 
   const rawPlan = subscription.metadata.plan ?? "";
   if (!isPaidUserPlan(rawPlan)) {
-    console.error(
-      `Stripe webhook: subscription ${subscription.id} has unrecognized plan metadata "${rawPlan}" — skipping sync to avoid incorrect plan change`,
-    );
+    billingLogger.error({
+      rawPlan,
+      subscriptionId: subscription.id,
+    }, "Stripe webhook subscription metadata used an unknown plan");
     return false;
   }
 

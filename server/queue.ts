@@ -16,6 +16,8 @@ import { ensureWorkingDirectories } from "./files";
 import { cleanupExpiredConversions } from "./maintenance";
 import { storage } from "./storage";
 import { type WebhookDeliveryPayload, processWebhookDelivery } from "./webhooks";
+import { getLogger } from "./observability/logger";
+import { captureException } from "./observability/sentry";
 
 const QUEUE_JOB_TIMEOUT_SECONDS = Math.ceil(CONVERTER_TIMEOUT_MS / 1000);
 const EXPIRY_SWEEP_INTERVAL_CRON = "*/10 * * * *";
@@ -41,12 +43,20 @@ const CONVERSION_QUEUE_NAMES: Record<ConverterFamily, string> = {
 const EXPIRY_QUEUE_NAME = "conversion-expiry";
 const EXPIRY_SWEEP_QUEUE_NAME = "conversion-expiry-sweep";
 const WEBHOOK_QUEUE_NAME = "webhook-delivery";
+const queueLogger = getLogger({ component: "queue" });
 
 type QueueJobName =
   | (typeof CONVERSION_QUEUE_NAMES)[ConverterFamily]
   | typeof EXPIRY_QUEUE_NAME
   | typeof EXPIRY_SWEEP_QUEUE_NAME
   | typeof WEBHOOK_QUEUE_NAME;
+
+const ALL_QUEUE_NAMES: QueueJobName[] = [
+  ...Object.values(CONVERSION_QUEUE_NAMES),
+  EXPIRY_QUEUE_NAME,
+  EXPIRY_SWEEP_QUEUE_NAME,
+  WEBHOOK_QUEUE_NAME,
+];
 
 interface QueueSendOptions {
   id?: string;
@@ -58,6 +68,13 @@ interface QueueStartOptions {
   onError?: (error: unknown) => void;
 }
 
+export interface QueueMetricSample {
+  activeWorkers: number;
+  depth: number;
+  queueName: QueueJobName;
+  runtime: "memory" | "pg-boss";
+}
+
 interface QueueRuntime {
   readonly kind: "memory" | "pg-boss";
   startServer(options: QueueStartOptions): Promise<void>;
@@ -65,6 +82,8 @@ interface QueueRuntime {
   enqueueConversionJob(payload: ConversionJobPayload): Promise<void>;
   scheduleExpiryJob(payload: ExpiryJobPayload, runAt: Date): Promise<void>;
   scheduleWebhookDeliveryJob(payload: WebhookDeliveryPayload, runAt?: Date): Promise<void>;
+  getHealthStatus(): Promise<boolean>;
+  getMetricSamples(): Promise<QueueMetricSample[]>;
   stop(): Promise<void>;
 }
 
@@ -98,7 +117,17 @@ async function enqueueWebhookJobsForConversion(
 }
 
 function defaultQueueErrorHandler(error: unknown) {
-  console.error("Queue runtime failed:", error);
+  queueLogger.error({ err: error }, "Queue runtime failed");
+  captureException(error, {
+    contexts: {
+      queue: {
+        runtime: queueRuntime.kind,
+      },
+    },
+    tags: {
+      component: "queue",
+    },
+  });
 }
 
 function shouldEmbedWorker() {
@@ -122,11 +151,14 @@ class MemoryQueueRuntime implements QueueRuntime {
   private queues = new Map<QueueJobName, unknown[]>();
   private workers = new Map<QueueJobName, { active: number; concurrency: number; handler: QueueHandler<any> }>();
   private delayedJobs = new Map<string, NodeJS.Timeout>();
+  private delayedQueueDepth = new Map<QueueJobName, number>();
   private expirySweepTimer: NodeJS.Timeout | null = null;
+  private started = false;
   private workersStarted = false;
 
   async startServer(options: QueueStartOptions) {
     this.onError = options.onError ?? this.onError;
+    this.started = true;
 
     if (options.embeddedWorker ?? true) {
       this.startWorkers();
@@ -137,6 +169,7 @@ class MemoryQueueRuntime implements QueueRuntime {
 
   async startWorker(options: QueueStartOptions) {
     this.onError = options.onError ?? this.onError;
+    this.started = true;
     this.startWorkers();
     this.startExpirySweep();
   }
@@ -170,9 +203,24 @@ class MemoryQueueRuntime implements QueueRuntime {
     }
 
     this.delayedJobs.clear();
+    this.delayedQueueDepth.clear();
     this.queues.clear();
     this.workers.clear();
+    this.started = false;
     this.workersStarted = false;
+  }
+
+  async getHealthStatus() {
+    return this.started;
+  }
+
+  async getMetricSamples() {
+    return ALL_QUEUE_NAMES.map((queueName) => ({
+      activeWorkers: this.workers.get(queueName)?.active ?? 0,
+      depth: (this.queues.get(queueName)?.length ?? 0) + (this.delayedQueueDepth.get(queueName) ?? 0),
+      queueName,
+      runtime: this.kind,
+    }));
   }
 
   private startWorkers() {
@@ -246,11 +294,13 @@ class MemoryQueueRuntime implements QueueRuntime {
     }
 
     if (options?.startAfter && options.startAfter.getTime() > Date.now()) {
+      this.incrementDelayedQueueDepth(queueName);
       const delayMs = Math.max(0, options.startAfter.getTime() - Date.now());
       const timer = setTimeout(() => {
         if (options.id) {
           this.delayedJobs.delete(options.id);
         }
+        this.decrementDelayedQueueDepth(queueName);
 
         this.enqueueNow(queueName, payload);
       }, delayMs);
@@ -265,6 +315,20 @@ class MemoryQueueRuntime implements QueueRuntime {
     }
 
     this.enqueueNow(queueName, payload);
+  }
+
+  private incrementDelayedQueueDepth(queueName: QueueJobName) {
+    this.delayedQueueDepth.set(queueName, (this.delayedQueueDepth.get(queueName) ?? 0) + 1);
+  }
+
+  private decrementDelayedQueueDepth(queueName: QueueJobName) {
+    const nextValue = (this.delayedQueueDepth.get(queueName) ?? 0) - 1;
+    if (nextValue <= 0) {
+      this.delayedQueueDepth.delete(queueName);
+      return;
+    }
+
+    this.delayedQueueDepth.set(queueName, nextValue);
   }
 
   private enqueueNow(queueName: QueueJobName, payload: unknown) {
@@ -371,6 +435,30 @@ class PgBossQueueRuntime implements QueueRuntime {
     }
 
     await boss.stop({ close: true, graceful: true });
+  }
+
+  async getHealthStatus() {
+    if (!this.boss && !this.starting) {
+      return false;
+    }
+
+    const boss = await this.ensureBoss();
+    await Promise.all(ALL_QUEUE_NAMES.map((queueName) => boss.getQueue(queueName)));
+    return true;
+  }
+
+  async getMetricSamples() {
+    const boss = await this.ensureBoss();
+
+    return Promise.all(ALL_QUEUE_NAMES.map(async (queueName) => {
+      const stats = await boss.getQueueStats(queueName);
+      return {
+        activeWorkers: stats.activeCount,
+        depth: stats.queuedCount + stats.deferredCount,
+        queueName,
+        runtime: this.kind,
+      };
+    }));
   }
 
   private async ensureBoss() {
@@ -594,4 +682,12 @@ export async function scheduleWebhookDeliveryJob(
   runAt?: Date,
 ) {
   await queueRuntime.scheduleWebhookDeliveryJob(payload, runAt);
+}
+
+export async function getQueueMetricSamples() {
+  return queueRuntime.getMetricSamples();
+}
+
+export async function getQueueHealthStatus() {
+  return queueRuntime.getHealthStatus();
 }

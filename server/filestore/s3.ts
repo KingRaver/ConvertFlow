@@ -1,10 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, HeadBucketCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { FileStore } from "./index";
+import { getLogger } from "../observability/logger";
 
 const DOWNLOAD_TTL_SECONDS = 15 * 60;
+const filestoreLogger = getLogger({ component: "filestore", driver: "s3" });
 
 function getRequiredEnv(name: string) {
   const value = process.env[name]?.trim();
@@ -42,7 +44,7 @@ export class S3FileStore implements FileStore {
           Key: key,
         }),
       );
-      console.info(`[filestore/s3] Uploaded: ${key}`);
+      filestoreLogger.info({ key }, "Uploaded file");
     } catch (error) {
       throw new Error(`S3 upload failed for ${key}: ${(error as Error).message}`);
     }
@@ -67,7 +69,7 @@ export class S3FileStore implements FileStore {
 
     await fs.mkdir(path.dirname(localPath), { recursive: true });
     await fs.writeFile(localPath, Buffer.from(await response.Body.transformToByteArray()));
-    console.info(`[filestore/s3] Retrieved: ${key}`);
+    filestoreLogger.info({ key }, "Retrieved file");
   }
 
   async delete(key: string) {
@@ -78,7 +80,7 @@ export class S3FileStore implements FileStore {
           Key: key,
         }),
       );
-      console.info(`[filestore/s3] Deleted: ${key}`);
+      filestoreLogger.info({ key }, "Deleted file");
     } catch (error) {
       throw new Error(`S3 delete failed for ${key}: ${(error as Error).message}`);
     }
@@ -98,6 +100,12 @@ export class S3FileStore implements FileStore {
     }
   }
 
+  async checkHealth() {
+    await this.client.send(new HeadBucketCommand({
+      Bucket: this.bucket,
+    }));
+  }
+
   async getDownloadUrl(key: string, filename: string) {
     try {
       const url = await getSignedUrl(
@@ -111,7 +119,7 @@ export class S3FileStore implements FileStore {
           expiresIn: DOWNLOAD_TTL_SECONDS,
         },
       );
-      console.info(`[filestore/s3] Generated pre-signed URL for: ${key}`);
+      filestoreLogger.info({ key }, "Generated pre-signed URL");
       return url;
     } catch (error) {
       throw new Error(`S3 pre-sign failed for ${key}: ${(error as Error).message}`);
