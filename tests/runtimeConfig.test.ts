@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import { createServer } from "node:http";
+import { resolveEmbeddedWorkerSetting } from "../server/queue";
 import { validateRuntimeConfig } from "../server/runtime-config";
 import { registerRoutes } from "../server/routes";
 
@@ -52,6 +53,15 @@ test("validateRuntimeConfig rejects standalone workers without PostgreSQL", () =
     () => validateRuntimeConfig("worker", buildEnv({ ALLOW_MEMORY_STORAGE: "true" })),
     /standalone queue worker/,
   );
+});
+
+test("embedded worker defaults to enabled unless it is explicitly disabled", () => {
+  const pgBossEnv = buildEnv({ DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/convertflow" });
+
+  assert.equal(resolveEmbeddedWorkerSetting(pgBossEnv), true);
+  assert.equal(resolveEmbeddedWorkerSetting({ ...pgBossEnv, EMBEDDED_CONVERSION_WORKER: "true" }), true);
+  assert.equal(resolveEmbeddedWorkerSetting({ ...pgBossEnv, EMBEDDED_CONVERSION_WORKER: "false" }), false);
+  assert.equal(resolveEmbeddedWorkerSetting(buildEnv({ ALLOW_MEMORY_STORAGE: "true" })), true);
 });
 
 test("registerRoutes fails startup when persistence is missing and memory storage was not explicitly allowed", async () => {

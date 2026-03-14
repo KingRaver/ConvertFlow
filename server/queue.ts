@@ -131,12 +131,15 @@ function defaultQueueErrorHandler(error: unknown) {
   });
 }
 
-function shouldEmbedWorker() {
-  if (getQueueRuntime().kind === "memory") {
+export function resolveEmbeddedWorkerSetting(
+  env: NodeJS.ProcessEnv = process.env,
+  runtime: QueueRuntimeKind = resolveRuntimeConfig(env).queueRuntime,
+) {
+  if (runtime === "memory") {
     return true;
   }
 
-  const configured = process.env.EMBEDDED_CONVERSION_WORKER?.trim().toLowerCase();
+  const configured = env.EMBEDDED_CONVERSION_WORKER?.trim().toLowerCase();
 
   if (configured === "true") {
     return true;
@@ -146,7 +149,7 @@ function shouldEmbedWorker() {
     return false;
   }
 
-  return process.env.NODE_ENV !== "production";
+  return true;
 }
 
 class MemoryQueueRuntime implements QueueRuntime {
@@ -649,14 +652,22 @@ export function getQueueRuntimeKind(): QueueRuntimeKind {
 export async function startQueueServerRuntime(httpServer: Server, options?: QueueStartOptions) {
   ensureWorkingDirectories();
 
-  const embeddedWorker = getQueueRuntime().kind === "memory"
-    ? true
-    : options?.embeddedWorker ?? shouldEmbedWorker();
+  const runtime = getQueueRuntime();
+  const embeddedWorker = options?.embeddedWorker ?? resolveEmbeddedWorkerSetting(process.env, runtime.kind);
 
-  await getQueueRuntime().startServer({
+  await runtime.startServer({
     embeddedWorker,
     onError: options?.onError,
   });
+
+  queueLogger.info({ embeddedWorker, runtime: runtime.kind }, "Queue server runtime started");
+
+  if (!embeddedWorker) {
+    queueLogger.warn(
+      { runtime: runtime.kind },
+      "Embedded conversion worker disabled; ensure a standalone worker process is running",
+    );
+  }
 
   httpServer.once("close", () => {
     void getQueueRuntime().stop().catch((error: unknown) => {
@@ -666,7 +677,7 @@ export async function startQueueServerRuntime(httpServer: Server, options?: Queu
 
   return {
     embeddedWorker,
-    kind: getQueueRuntime().kind,
+    kind: runtime.kind,
   };
 }
 

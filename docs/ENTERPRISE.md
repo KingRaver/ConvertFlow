@@ -19,6 +19,7 @@ ConvertFlow ships a real conversion pipeline:
 
 - `DATABASE_URL` is required for any deployable environment.
 - `ALLOW_MEMORY_STORAGE=true` is a local-only escape hatch for isolated development and tests.
+- The API embeds conversion workers by default. Only set `EMBEDDED_CONVERSION_WORKER=false` when a standalone worker process is definitely running.
 - A standalone worker (`npm run worker`) requires PostgreSQL. The worker does not start in memory mode.
 - `/api/health` exposes the active storage runtime, queue runtime, and file-store driver so deployment mistakes are visible immediately.
 
