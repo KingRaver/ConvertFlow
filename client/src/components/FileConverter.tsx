@@ -350,8 +350,8 @@ export default function FileConverter({ presetFrom, presetTo }: FileConverterPro
               wispIntensity={25}
               flowSpeed={0.5}
               flowStrength={0.66}
-              fogIntensity={5.95}
-              fogScale={888.88}
+              fogIntensity={22.22}
+              fogScale={44.44}
               fogFallSpeed={1.21}
               decay={1.33}
               falloffStart={3.69}
