@@ -16,6 +16,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import FileConverter from "@/components/FileConverter";
+import DarkVeil from "@/components/DarkVeil";
 import { POPULAR_CONVERSIONS, FORMAT_CATEGORIES } from "@shared/schema";
 
 const FEATURES = [
@@ -63,7 +64,10 @@ export default function Home() {
   return (
     <div className="flex flex-col">
       <section className="relative overflow-hidden" data-testid="section-hero">
-        <div className="absolute inset-0 bg-gradient-to-b from-primary/[0.03] to-transparent pointer-events-none" />
+        <div className="absolute inset-0 pointer-events-none">
+          <DarkVeil hueShift={48} noiseIntensity={0} scanlineIntensity={0} speed={0.5} scanlineFrequency={0.5} warpAmount={0} />
+        </div>
+        <div className="absolute inset-0 bg-gradient-to-b from-background/60 to-background pointer-events-none" />
         <div className="mx-auto max-w-6xl px-4 sm:px-6 pt-16 pb-12 sm:pt-24 sm:pb-16">
           <div className="text-center mb-10">
             <Badge variant="secondary" className="mb-4 text-xs font-normal px-3 py-1">
