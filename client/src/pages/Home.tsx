@@ -141,14 +141,17 @@ export default function Home() {
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           {Object.entries(FORMAT_CATEGORIES).map(([key, category]) => (
-            <div key={key} className="p-4 rounded-xl border border-border/60 bg-card">
-              <div className="flex items-center gap-2 mb-3">
+            <div
+              key={key}
+              className="flex flex-col items-center p-4 rounded-xl border border-border/60 bg-card text-center"
+            >
+              <div className="flex items-center justify-center gap-2 mb-3">
                 <div className="w-7 h-7 rounded-md bg-primary/10 flex items-center justify-center text-primary">
                   {CATEGORY_ICONS[category.icon]}
                 </div>
                 <span className="text-sm font-medium">{category.label}</span>
               </div>
-              <div className="flex flex-wrap gap-1">
+              <div className="flex flex-wrap justify-center gap-1">
                 {category.formats.map((format) => (
                   <Badge key={format} variant="secondary" className="text-[10px] font-mono">
                     .{format}
