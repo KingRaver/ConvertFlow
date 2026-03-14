@@ -343,7 +343,7 @@ export default function FileConverter({ presetFrom, presetTo }: FileConverterPro
               color="#0d9488"
               horizontalBeamOffset={0.1}
               verticalBeamOffset={-0.5}
-              verticalSizing={777.7}
+              verticalSizing={150.0}
               horizontalSizing={12.1}
               wispDensity={33.3}
               wispSpeed={10}
