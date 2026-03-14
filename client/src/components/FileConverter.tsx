@@ -344,15 +344,15 @@ export default function FileConverter({ presetFrom, presetTo }: FileConverterPro
               horizontalBeamOffset={0.3}
               verticalBeamOffset={-0.5}
               verticalSizing={500}
-              horizontalSizing={2}
+              horizontalSizing={20}
               wispDensity={55}
               wispSpeed={10}
-              wispIntensity={5}
+              wispIntensity={25}
               flowSpeed={0.5}
-              flowStrength={0.33}
-              fogIntensity={3.95}
-              fogScale={3.71}
-              fogFallSpeed={0.12}
+              flowStrength={0.66}
+              fogIntensity={5.95}
+              fogScale={4.44}
+              fogFallSpeed={1.21}
               decay={1.33}
               falloffStart={0.69}
             />
