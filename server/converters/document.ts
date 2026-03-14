@@ -201,7 +201,12 @@ function createDocumentAdapter(
     sourceFormat,
     targetFormat,
     engineName,
-    convert,
+    async convert(inputPath, outputPath, options) {
+      await withTimeout(
+        () => convert(inputPath, outputPath, options),
+        `${sourceFormat}->${targetFormat} document conversion`,
+      );
+    },
   };
 }
 

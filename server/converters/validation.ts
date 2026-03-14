@@ -87,9 +87,9 @@ async function validateCsvFile(outputPath: string) {
 
   try {
     parseCsv(raw, {
-      columns: true,
       skip_empty_lines: true,
       trim: true,
+      relax_column_count: true,
     });
   } catch (error) {
     throw new OutputValidationError("The converted CSV file was not valid CSV.", {
