@@ -338,20 +338,20 @@ export default function FileConverter({ presetFrom, presetTo }: FileConverterPro
         />
 
         {!hasFiles && (
-          <div className="absolute -top-[240px] inset-x-0 h-[240px] pointer-events-none">
+          <div className="absolute -top-[230px] inset-x-0 h-[230px] pointer-events-none">
             <LaserFlow
               color="#0d9488"
               horizontalBeamOffset={0.3}
               verticalBeamOffset={-0.5}
-              verticalSizing={2}
+              verticalSizing={5}
               horizontalSizing={2}
               wispDensity={5}
-              wispSpeed={15}
+              wispSpeed={10}
               wispIntensity={5}
               flowSpeed={0.5}
               flowStrength={0.33}
-              fogIntensity={0.45}
-              fogScale={0.41}
+              fogIntensity={0.95}
+              fogScale={0.71}
               fogFallSpeed={0.12}
               decay={1.33}
               falloffStart={0.69}
