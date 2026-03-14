@@ -405,7 +405,7 @@ class PgBossQueueRuntime implements QueueRuntime {
 
     await boss.send(EXPIRY_QUEUE_NAME, payload, {
       expireInSeconds: QUEUE_JOB_TIMEOUT_SECONDS,
-      id: `conversion-expiry-${payload.conversionId}`,
+      singletonKey: `conversion-expiry-${payload.conversionId}`,
       retryLimit: 0,
       startAfter: runAt,
     });
