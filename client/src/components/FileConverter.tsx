@@ -341,7 +341,7 @@ export default function FileConverter({ presetFrom, presetTo }: FileConverterPro
           <div className="absolute -top-[400px] left-1/2 -translate-x-1/2 w-screen h-[400px] pointer-events-none">
             <LaserFlow
               color="#0d9488"
-              horizontalBeamOffset={0.3}
+              horizontalBeamOffset={0.1}
               verticalBeamOffset={-0.5}
               verticalSizing={777.7}
               horizontalSizing={12.1}
