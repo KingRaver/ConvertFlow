@@ -166,19 +166,25 @@ export default function Home() {
           <p className="text-sm text-muted-foreground mb-6 max-w-xl mx-auto">
             Upload a file to start a conversion, or inspect the full list of supported format routes.
           </p>
-          <div className="flex items-center justify-center gap-3">
+          <div className="flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
             <Button
+              className="w-full sm:w-auto"
               onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
               data-testid="button-cta-upload"
             >
               Start Converting
               <ArrowRight className="w-4 h-4 ml-1.5" />
             </Button>
-            <Link href="/formats">
-              <Button variant="outline" data-testid="button-cta-formats">
+            <Button
+              asChild
+              className="w-full sm:w-auto"
+              variant="outline"
+              data-testid="button-cta-formats"
+            >
+              <Link href="/formats">
                 Browse Formats
-              </Button>
-            </Link>
+              </Link>
+            </Button>
           </div>
         </div>
       </section>
