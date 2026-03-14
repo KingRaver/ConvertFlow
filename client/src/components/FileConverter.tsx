@@ -353,8 +353,8 @@ export default function FileConverter({ presetFrom, presetTo }: FileConverterPro
               fogIntensity={22.22}
               fogScale={44.44}
               fogFallSpeed={1.21}
-              decay={1.33}
-              falloffStart={2.34}
+              decay={1.1}
+              falloffStart={0.34}
             />
           </div>
         )}
