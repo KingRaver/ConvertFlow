@@ -5,12 +5,12 @@ import express from "express";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { expireConversionRecord } from "../server/conversion-jobs";
 import { registerRoutes } from "../server/routes";
-import { storage } from "../server/storage";
+import { getStorage } from "../server/storage";
 
 let emailCounter = 0;
 
 async function cleanupConversion(id: number) {
-  const conversion = await storage.getConversion(id);
+  const conversion = await getStorage().getConversion(id);
   if (!conversion) {
     return;
   }

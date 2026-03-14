@@ -11,7 +11,7 @@ import {
 } from "../server/conversion-jobs";
 import { OUTPUT_DIR, ensureWorkingDirectories } from "../server/files";
 import { getUploadObjectKey } from "../server/filestore";
-import { storage } from "../server/storage";
+import { getStorage } from "../server/storage";
 
 const VISITOR_ID = "cf_88888888-8888-4888-8888-888888888888";
 const FIXTURE_TXT = path.join(process.cwd(), "tests/fixtures/sample.txt");
@@ -29,7 +29,7 @@ function writeUploadObject(content: string | Buffer, ext: string) {
 }
 
 async function makeConversion(overrides: Partial<InsertConversion> = {}) {
-  return storage.createConversion({
+  return getStorage().createConversion({
     originalName: "sample.txt",
     originalFormat: "txt",
     targetFormat: "docx",
@@ -61,7 +61,7 @@ test("processQueuedConversion converts txt→docx and marks the job completed", 
     targetFormat: "docx",
   });
 
-  const result = await storage.getConversion(conversion.id);
+  const result = await getStorage().getConversion(conversion.id);
   assert.ok(result, "record should still exist");
   assert.equal(result.status, "completed");
   assert.ok(result.outputFilename, "outputFilename should be set");
@@ -91,7 +91,7 @@ test("processQueuedConversion marks the job failed and cleans up when input file
     targetFormat: "docx",
   });
 
-  const result = await storage.getConversion(conversion.id);
+  const result = await getStorage().getConversion(conversion.id);
   assert.ok(result, "record should still exist");
   assert.equal(result.status, "failed");
   assert.ok(result.resultMessage, "resultMessage should be set");
@@ -127,7 +127,7 @@ test("processQueuedConversion cleans up and expires a conversion that has alread
 
   assert.equal(fs.existsSync(inputPath), false, "input file should be cleaned up");
   assert.equal(
-    await storage.getConversion(conversion.id),
+    await getStorage().getConversion(conversion.id),
     undefined,
     "expired record should be deleted from storage",
   );
@@ -145,7 +145,7 @@ test("processQueuedConversion is a no-op for already-completed jobs", async () =
   });
 
   assert.equal(fs.existsSync(inputPath), true, "input file should be retained");
-  const result = await storage.getConversion(conversion.id);
+  const result = await getStorage().getConversion(conversion.id);
   assert.ok(result);
   assert.equal(result.status, "completed", "status must not be changed");
   fs.unlinkSync(inputPath);
@@ -163,7 +163,7 @@ test("processQueuedConversion is a no-op for already-failed jobs", async () => {
   });
 
   assert.equal(fs.existsSync(inputPath), true, "input file should be retained for retry");
-  const result = await storage.getConversion(conversion.id);
+  const result = await getStorage().getConversion(conversion.id);
   assert.ok(result);
   assert.equal(result.status, "failed", "status must not be changed");
   fs.unlinkSync(inputPath);
@@ -178,7 +178,7 @@ test("expireConversionRecord deletes the record and its output file", async (t) 
   const { inputKey, inputPath } = writeUploadObject("retry me\n", "txt");
   const outputFilename = `${uuidv4()}.docx`;
   const outputPath = path.join(OUTPUT_DIR, outputFilename);
-  fs.writeFileSync(outputPath, "fake output");
+  fs.writeFileSync(outputPath, "test output");
   t.after(() => {
     if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
     if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
@@ -196,7 +196,7 @@ test("expireConversionRecord deletes the record and its output file", async (t) 
   assert.equal(fs.existsSync(inputPath), false, "input file should be deleted");
   assert.equal(fs.existsSync(outputPath), false, "output file should be deleted");
   assert.equal(
-    await storage.getConversion(conversion.id),
+    await getStorage().getConversion(conversion.id),
     undefined,
     "record should be deleted from storage",
   );
@@ -213,7 +213,7 @@ test("expireConversionRecord handles a record with no output file", async () => 
   await expireConversionRecord(conversion);
 
   assert.equal(
-    await storage.getConversion(conversion.id),
+    await getStorage().getConversion(conversion.id),
     undefined,
     "record should be deleted from storage",
   );
@@ -228,7 +228,7 @@ test("expireConversionById deletes an expired record and its output file", async
   const { inputKey, inputPath } = writeUploadObject("retry me\n", "txt");
   const outputFilename = `${uuidv4()}.docx`;
   const outputPath = path.join(OUTPUT_DIR, outputFilename);
-  fs.writeFileSync(outputPath, "fake output");
+  fs.writeFileSync(outputPath, "test output");
   t.after(() => {
     if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
     if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
@@ -247,7 +247,7 @@ test("expireConversionById deletes an expired record and its output file", async
   assert.equal(fs.existsSync(inputPath), false, "input file should be deleted");
   assert.equal(fs.existsSync(outputPath), false, "output file should be deleted");
   assert.equal(
-    await storage.getConversion(conversion.id),
+    await getStorage().getConversion(conversion.id),
     undefined,
     "record should be deleted from storage",
   );
@@ -262,7 +262,7 @@ test("expireConversionById is a no-op when the conversion has not yet expired", 
 
   assert.equal(result, false);
   assert.ok(
-    await storage.getConversion(conversion.id),
+    await getStorage().getConversion(conversion.id),
     "record should still exist",
   );
 });

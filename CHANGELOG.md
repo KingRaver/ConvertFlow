@@ -2,6 +2,42 @@
 
 ---
 
+## Lazy Storage and Queue Initialization
+
+### Motivation
+
+Previously `server/storage.ts` and `server/queue.ts` exported module-level singletons (`storage`, `queueRuntime`, `storageRuntimeKind`, `queueRuntimeKind`) that were instantiated at import time. Because Node.js resolves static imports before executing module body code, these singletons were constructed before `validateRuntimeConfig()` ran at line 36 of `server/index.ts`. Any script or future entrypoint that imported `storage` directly would silently receive a `MemStorage` instance with no enforcement — even in environments where `ALLOW_MEMORY_STORAGE` was not set.
+
+### Changes
+
+**`server/storage.ts`**
+- Removed `export const storage` and `export const storageRuntimeKind` module-level singletons
+- Added `export function getStorage(): IStorage` — calls `validateRuntimeConfig()` on first access, then initializes and caches a `DrizzleStorage` or `MemStorage` instance based on resolved config
+- Added `export function getStorageRuntimeKind(): StorageRuntimeKind` — returns `resolveRuntimeConfig().storageRuntime` on each call (cheap, stateless)
+
+**`server/queue.ts`**
+- Removed `export const queueRuntimeKind` and internal `const queueRuntime` module-level singletons
+- Added private `function getQueueRuntime(): QueueRuntime` — validates config on first access, initializes and caches a `PgBossQueueRuntime` or `MemoryQueueRuntime`
+- Added `export function getQueueRuntimeKind(): QueueRuntimeKind` — returns `resolveRuntimeConfig().queueRuntime` on each call
+- Updated all 12 internal usages of `queueRuntime` to call `getQueueRuntime()`
+
+**Call sites updated (13 files)**
+- `server/observability/health.ts` — `storageRuntimeKind` → `getStorageRuntimeKind()`, `queueRuntimeKind` → `getQueueRuntimeKind()`
+- `server/routes.ts`, `server/middleware/auth.ts`, `server/webhooks.ts` — `storage.method()` → `getStorage().method()`
+- `server/conversion-jobs.ts`, `server/maintenance.ts`, `server/billing.ts` — import + `= storage` default parameters → `= getStorage()`
+- `tests/serverRoutes.test.ts`, `tests/publicApi.test.ts`, `tests/conversionJobs.test.ts`, `tests/observabilityRoutes.test.ts`, `tests/phase8Routes.test.ts` — same pattern
+
+### Guarantee
+
+After this change, any import of `getStorage()` or `getQueueRuntime()` (direct or transitive) will call `validateRuntimeConfig()` before any storage or queue object is constructed. A misconfigured deployment will throw immediately on first I/O attempt regardless of which entrypoint or script initiated the call — not only when going through `server/index.ts`.
+
+### Validation
+
+- `npm run check`: passes (0 TypeScript errors)
+- `npm test`: 109/109 pass
+
+---
+
 ## Phase 1 — Real Conversion Engine
 
 ### Converter adapter layer
@@ -437,5 +473,29 @@
 - `GET /api/health returns component health for the running service` — asserts 200 and `{status:"ok", db:"ok", queue:"ok", storage:"ok"}`
 - `GET /metrics exposes conversion and queue metrics after a job completes` — submits a real txt→docx job, waits for completion, asserts Prometheus response contains `convertflow_conversion_total` with `route="txt->docx",status="completed"` and `convertflow_queue_depth`
 - `GET /metrics requires the monitoring token when configured` — sets `MONITORING_TOKEN` env var, asserts unauthenticated request returns 401, request with correct `x-monitoring-token` header returns 200
+
+---
+
+## Bug Fixes
+
+### PDF → CSV conversion failing at validation
+- `validateCsvFile` used `csv-parse` with `columns: true`, which treats the first CSV row as a header and throws `Invalid Record Length` when any subsequent row has more columns than the header — a near-certain failure for PDF-derived CSV where each line of text is split into a variable number of columns by whitespace
+- Fixed by replacing `columns: true` with `relax_column_count: true`; validation now checks that the file is syntactically valid CSV without enforcing column-count consistency across rows
+
+### Expiry job scheduling UUID error for unauthenticated conversions
+- `PgBossQueueRuntime.scheduleExpiryJob` passed `id: "conversion-expiry-{n}"` to `pg-boss`, which maps the `id` field directly to a UUID primary key column; a non-UUID string caused a Postgres `invalid input syntax for type uuid` error, preventing the conversion from being enqueued
+- Fixed by switching from `id` to `singletonKey`, which is the pg-boss field designed for string-based job deduplication
+
+### Client polling timeout too short for large file conversions
+- `pollConversionUntilSettled` defaulted to `maxAttempts: 30` at a 1-second interval, producing a 30-second client-side timeout; large or complex file conversions (especially PDF extraction) regularly exceed this limit, causing the UI to show a false timeout error while the server was still processing
+- Increased `maxAttempts` to `300` (5 minutes) to match the server-side `CONVERTER_TIMEOUT_MS`
+
+### Converter timeout increased to 5 minutes
+- `CONVERTER_TIMEOUT_MS` was `60_000` ms (1 minute); complex file conversions, particularly multi-page PDF text extraction, routinely exceeded this limit and were killed prematurely
+- Increased to `5 * 60 * 1_000` (5 minutes); queue job `expireInSeconds` derives from this constant and updates automatically
+
+### Document converters missing timeout wrapper
+- `createDocumentAdapter` did not wrap conversions in `withTimeout`, unlike `createDataAdapter` which does; pure-JS document converters (pdfkit, pdf-parse, mammoth, docx) could run indefinitely with no deadline
+- Fixed by adding the same `withTimeout` wrapping pattern used by `createDataAdapter`
 
 ---

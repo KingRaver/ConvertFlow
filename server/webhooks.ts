@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { Conversion, Webhook, WebhookEventType } from "@shared/schema";
-import { storage } from "./storage";
+import { getStorage } from "./storage";
 
 const WEBHOOK_REQUEST_TIMEOUT_MS = 10_000;
 const WEBHOOK_SECRET_BYTES = 32;
@@ -74,12 +74,12 @@ function getRetryAt(attempt: number, now = new Date()) {
 export async function processWebhookDelivery(
   payload: WebhookDeliveryPayload,
 ): Promise<WebhookDeliveryResult> {
-  const webhook = await storage.getWebhook(payload.webhookId);
+  const webhook = await getStorage().getWebhook(payload.webhookId);
   if (!webhook || !webhook.events.includes(payload.event)) {
     return { delivered: false };
   }
 
-  const conversion = await storage.getConversion(payload.conversionId);
+  const conversion = await getStorage().getConversion(payload.conversionId);
   if (!conversion) {
     return { delivered: false };
   }

@@ -6,7 +6,7 @@ import express from "express";
 import { createServer } from "node:http";
 import { expireConversionRecord } from "../server/conversion-jobs";
 import { registerRoutes } from "../server/routes";
-import { storage } from "../server/storage";
+import { getStorage } from "../server/storage";
 import { VISITOR_ID_HEADER } from "../shared/visitor";
 
 const VISITOR_ID = "cf_77777777-7777-4777-8777-777777777777";
@@ -84,7 +84,7 @@ function createAuthHeader(token: string) {
 }
 
 async function cleanupConversion(id: number) {
-  const conversion = await storage.getConversion(id);
+  const conversion = await getStorage().getConversion(id);
   if (!conversion) {
     return;
   }
@@ -445,7 +445,7 @@ test("retry re-enqueues a failed conversion using the retained input file", asyn
   }, created.id);
   assert.equal(failed.status, "failed");
 
-  const storedConversion = await storage.getConversion(created.id);
+  const storedConversion = await getStorage().getConversion(created.id);
   assert.ok(storedConversion?.inputKey, "inputKey should be retained for retries");
   fs.writeFileSync(path.join(process.cwd(), storedConversion.inputKey), VALID_PNG);
 
@@ -724,7 +724,7 @@ test("retrying a conversion whose input file was deleted returns 409", async (t)
   const failed = await waitForSettledJob(server.baseUrl, { [VISITOR_ID_HEADER]: VISITOR_ID }, created.id);
   assert.equal(failed.status, "failed");
 
-  const storedConversion = await storage.getConversion(created.id);
+  const storedConversion = await getStorage().getConversion(created.id);
   assert.ok(storedConversion?.inputKey, "inputKey should be retained after failure");
 
   // Delete the input file to simulate it being cleaned up

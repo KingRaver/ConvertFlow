@@ -9,4 +9,4 @@ Phase 1 is implemented with a mixed runtime:
 - `xlsx`, `csv-parse`, and `csv-stringify` handle data routes.
 - `ffmpeg-static` is the default bundled media runtime, with a system `ffmpeg` fallback.
 
-LibreOffice is not required by the current implementation. Legacy `.doc` routes use macOS `textutil`, so `.doc` conversion is only available where that tool exists. If you later swap `.doc` or `.docx` PDF export to LibreOffice, target LibreOffice 7.6 or newer and validate the headless binary on each deployment target before enabling it in production.
+LibreOffice is not required by the current implementation. Legacy `.doc` adapters still use macOS `textutil`, but `.doc` is no longer advertised in the public route map because that runtime is not deployment-portable. If you later restore `.doc` to the product surface, replace the `textutil` dependency with a portable converter or gate the route explicitly per deployment target.

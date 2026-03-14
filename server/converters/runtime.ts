@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import path from "node:path";
 import ffmpegStatic from "ffmpeg-static";
 import { ConversionError, ConversionTimeoutError, MissingToolError } from "./index";
 
@@ -171,4 +172,17 @@ export function resolveFfmpegBinary() {
 
 export function resolveTextutilBinary() {
   return process.platform === "darwin" ? "/usr/bin/textutil" : "textutil";
+}
+
+function isCommandAvailable(command: string) {
+  if (command.includes(path.sep)) {
+    return existsSync(command);
+  }
+
+  const pathEntries = process.env.PATH?.split(path.delimiter) ?? [];
+  return pathEntries.some((entry) => existsSync(path.join(entry, command)));
+}
+
+export function isLegacyDocConverterAvailable() {
+  return isCommandAvailable(resolveTextutilBinary());
 }

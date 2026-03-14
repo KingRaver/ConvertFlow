@@ -13,7 +13,7 @@ import { recordConversionResult } from "./observability/metrics";
 import { getLogger } from "./observability/logger";
 import { captureException } from "./observability/sentry";
 import type { IStorage } from "./storage";
-import { storage } from "./storage";
+import { getStorage } from "./storage";
 
 export interface ConversionJobPayload {
   conversionId: number;
@@ -120,7 +120,7 @@ async function syncBatchIfNeeded(batchId: number | null | undefined) {
   }
 
   try {
-    await storage.syncBatch(batchId);
+    await getStorage().syncBatch(batchId);
   } catch (error) {
     conversionLogger.error({ batchId, err: error }, "Failed to sync batch");
   }
@@ -128,7 +128,7 @@ async function syncBatchIfNeeded(batchId: number | null | undefined) {
 
 export async function expireConversionRecord(
   conversion: Conversion,
-  activeStorage: IStorage = storage,
+  activeStorage: IStorage = getStorage(),
 ) {
   const batchId = conversion.batchId;
   await safeDeleteStoredFile(conversion.inputKey);
@@ -144,7 +144,7 @@ export async function expireConversionRecord(
 export async function expireConversionById(
   { conversionId }: ExpiryJobPayload,
   now = new Date(),
-  activeStorage: IStorage = storage,
+  activeStorage: IStorage = getStorage(),
 ) {
   const conversion = await activeStorage.getConversion(conversionId);
 
@@ -167,7 +167,7 @@ export async function processQueuedConversion({
   targetFormat,
 }: ConversionJobPayload, options?: ProcessQueuedConversionOptions) {
   const route = getRouteLabel(sourceFormat, targetFormat);
-  const conversion = await storage.getConversion(conversionId).catch(async (error) => {
+  const conversion = await getStorage().getConversion(conversionId).catch(async (error) => {
     await safeDeleteStoredFile(payloadInputKey);
     throw error;
   });
@@ -190,7 +190,7 @@ export async function processQueuedConversion({
   }
 
   if (!inputKey) {
-    const failedConversion = await storage.updateConversion(conversionId, {
+    const failedConversion = await getStorage().updateConversion(conversionId, {
       resultMessage: "Failed to convert: original input file is unavailable.",
       status: "failed",
     });
@@ -236,7 +236,7 @@ export async function processQueuedConversion({
       visitorId: conversion.visitorId,
     }, "Conversion started");
 
-    await storage.updateConversion(conversionId, {
+    await getStorage().updateConversion(conversionId, {
       engineUsed,
       processingStartedAt: new Date(),
       resultMessage: formatProcessingMessage(sourceFormat, targetFormat),
@@ -251,7 +251,7 @@ export async function processQueuedConversion({
 
     const convertedSize = fs.statSync(workspace.outputPath).size;
     const durationMs = Date.now() - startedAt;
-    const completedConversion = await storage.updateConversion(conversionId, {
+    const completedConversion = await getStorage().updateConversion(conversionId, {
       convertedSize,
       engineUsed,
       outputFilename,
@@ -269,7 +269,7 @@ export async function processQueuedConversion({
 
     if (conversion.userId !== null) {
       try {
-        await storage.createUsageEvent({
+        await getStorage().createUsageEvent({
           eventType: "conversion",
           fileSize: conversion.fileSize,
           format: `${sourceFormat}->${targetFormat}`,
@@ -298,7 +298,7 @@ export async function processQueuedConversion({
     const durationMs = Date.now() - startedAt;
     await safeDeleteStoredFile(outputKey);
 
-    const failedConversion = await storage.updateConversion(conversionId, {
+    const failedConversion = await getStorage().updateConversion(conversionId, {
       convertedSize: null,
       engineUsed,
       outputFilename: null,

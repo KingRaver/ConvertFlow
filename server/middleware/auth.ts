@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { API_KEY_PREFIX, hashSecret } from "../auth";
 import { USER_PLANS, USER_ROLES, type UserPlan, type UserRole } from "@shared/schema";
-import { storage } from "../storage";
+import { getStorage } from "../storage";
 
 export interface RequestUser {
   createdAt: Date | null;
@@ -68,29 +68,29 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 }
 
 async function attachSessionUser(req: Request, token: string) {
-  const session = await storage.getSessionByToken(token);
+  const session = await getStorage().getSessionByToken(token);
   if (!session) {
     return null;
   }
 
   if (session.expiresAt.getTime() <= Date.now()) {
-    await storage.deleteSessionByToken(token);
+    await getStorage().deleteSessionByToken(token);
     return null;
   }
 
-  const user = await storage.getUserById(session.userId);
+  const user = await getStorage().getUserById(session.userId);
   if (!user) {
-    await storage.deleteSessionByToken(token);
+    await getStorage().deleteSessionByToken(token);
     return null;
   }
 
   if (!(USER_ROLES as readonly string[]).includes(user.role)) {
-    await storage.deleteSessionByToken(token);
+    await getStorage().deleteSessionByToken(token);
     return null;
   }
 
   if (!(USER_PLANS as readonly string[]).includes(user.plan)) {
-    await storage.deleteSessionByToken(token);
+    await getStorage().deleteSessionByToken(token);
     return null;
   }
 
@@ -109,12 +109,12 @@ async function attachSessionUser(req: Request, token: string) {
 }
 
 async function attachApiKeyUser(req: Request, token: string) {
-  const apiKey = await storage.getActiveApiKeyByHash(hashSecret(token));
+  const apiKey = await getStorage().getActiveApiKeyByHash(hashSecret(token));
   if (!apiKey) {
     return null;
   }
 
-  const user = await storage.getUserById(apiKey.userId);
+  const user = await getStorage().getUserById(apiKey.userId);
   if (!user) {
     return null;
   }
@@ -127,7 +127,7 @@ async function attachApiKeyUser(req: Request, token: string) {
     return null;
   }
 
-  await storage.touchApiKeyLastUsed(apiKey.id, new Date());
+  await getStorage().touchApiKeyLastUsed(apiKey.id, new Date());
 
   req.apiKeyId = apiKey.id;
   req.authToken = undefined;

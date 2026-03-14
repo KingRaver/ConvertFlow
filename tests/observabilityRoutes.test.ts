@@ -3,14 +3,15 @@ import assert from "node:assert/strict";
 import express from "express";
 import { createServer } from "node:http";
 import { expireConversionRecord } from "../server/conversion-jobs";
+import { isLegacyDocConverterAvailable } from "../server/converters/runtime";
 import { registerRoutes } from "../server/routes";
-import { storage } from "../server/storage";
+import { getStorage } from "../server/storage";
 import { VISITOR_ID_HEADER } from "../shared/visitor";
 
 const VISITOR_ID = "cf_77777777-7777-4777-8777-777777777777";
 
 async function cleanupConversion(id: number) {
-  const conversion = await storage.getConversion(id);
+  const conversion = await getStorage().getConversion(id);
   if (!conversion) {
     return;
   }
@@ -109,16 +110,34 @@ test("GET /api/health returns component health for the running service", async (
 
   const response = await fetch(`${server.baseUrl}/api/health`);
   const json = await response.json() as {
+    capabilities: {
+      billingConfigured: boolean;
+      legacyDocConverterAvailable: boolean;
+    };
     db: "ok" | "error";
     queue: "ok" | "error";
+    runtime: {
+      filestore: "local" | "s3";
+      queue: "memory" | "pg-boss";
+      storage: "memory" | "postgres";
+    };
     status: "ok" | "error";
     storage: "ok" | "error";
   };
 
   assert.equal(response.status, 200);
   assert.deepEqual(json, {
+    capabilities: {
+      billingConfigured: false,
+      legacyDocConverterAvailable: isLegacyDocConverterAvailable(),
+    },
     db: "ok",
     queue: "ok",
+    runtime: {
+      filestore: "local",
+      queue: "memory",
+      storage: "memory",
+    },
     status: "ok",
     storage: "ok",
   });

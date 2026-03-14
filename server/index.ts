@@ -7,6 +7,7 @@ import { VISITOR_ID_HEADER } from "@shared/visitor";
 import { runStartupMaintenance } from "./maintenance";
 import { getLogger } from "./observability/logger";
 import { initSentry, captureException } from "./observability/sentry";
+import { validateRuntimeConfig } from "./runtime-config";
 
 try { (process as NodeJS.Process & { loadEnvFile?: () => void }).loadEnvFile?.(); } catch { /* no .env file in production */ }
 
@@ -32,6 +33,7 @@ app.use(express.urlencoded({ extended: false }));
 
 (async () => {
   initSentry("convertflow-api");
+  validateRuntimeConfig("api");
 
   const maintenance = await runStartupMaintenance();
   if (maintenance.recovered > 0) {

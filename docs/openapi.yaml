@@ -22,6 +22,7 @@ paths:
     get:
       tags: [Observability]
       summary: Report API health
+      description: Includes deployment runtime selections and capability flags such as billing availability.
       security: []
       responses:
         "200":
@@ -496,9 +497,32 @@ components:
         error:
           type: string
       required: [error]
+    HealthCapabilities:
+      type: object
+      properties:
+        billingConfigured:
+          type: boolean
+        legacyDocConverterAvailable:
+          type: boolean
+      required: [billingConfigured, legacyDocConverterAvailable]
+    HealthRuntime:
+      type: object
+      properties:
+        filestore:
+          type: string
+          enum: [local, s3]
+        queue:
+          type: string
+          enum: [memory, pg-boss]
+        storage:
+          type: string
+          enum: [memory, postgres]
+      required: [filestore, queue, storage]
     Health:
       type: object
       properties:
+        capabilities:
+          $ref: "#/components/schemas/HealthCapabilities"
         status:
           type: string
           enum: [ok, error]
@@ -511,7 +535,9 @@ components:
         storage:
           type: string
           enum: [ok, error]
-      required: [status, db, queue, storage]
+        runtime:
+          $ref: "#/components/schemas/HealthRuntime"
+      required: [capabilities, status, db, queue, storage, runtime]
     ApiKey:
       type: object
       properties:

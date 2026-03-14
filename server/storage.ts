@@ -22,8 +22,8 @@ import type {
   Webhook,
   WebhookEventType,
 } from "@shared/schema";
-import { hasDatabaseUrl } from "./db";
 import { DrizzleStorage } from "./storage/drizzle";
+import { resolveRuntimeConfig, validateRuntimeConfig, type StorageRuntimeKind } from "./runtime-config";
 
 export interface ConversionListOptions {
   format?: string;
@@ -708,4 +708,19 @@ export class MemStorage implements IStorage {
   }
 }
 
-export const storage = hasDatabaseUrl() ? new DrizzleStorage() : new MemStorage();
+let _storage: IStorage | null = null;
+
+export function getStorage(): IStorage {
+  if (!_storage) {
+    validateRuntimeConfig();
+    _storage = resolveRuntimeConfig().storageRuntime === "postgres"
+      ? new DrizzleStorage()
+      : new MemStorage();
+  }
+
+  return _storage;
+}
+
+export function getStorageRuntimeKind(): StorageRuntimeKind {
+  return resolveRuntimeConfig().storageRuntime;
+}

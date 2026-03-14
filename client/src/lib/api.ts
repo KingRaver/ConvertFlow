@@ -45,6 +45,22 @@ export interface BillingRedirectResponse {
   url: string;
 }
 
+export interface ServiceHealthResponse {
+  capabilities: {
+    billingConfigured: boolean;
+    legacyDocConverterAvailable: boolean;
+  };
+  db: "ok" | "error";
+  queue: "ok" | "error";
+  runtime: {
+    filestore: "local" | "s3";
+    queue: "memory" | "pg-boss";
+    storage: "memory" | "postgres";
+  };
+  status: "ok" | "error";
+  storage: "ok" | "error";
+}
+
 function buildHeaders(extraHeaders?: HeadersInit) {
   const headers = new Headers(getVisitorHeaders());
   const token = getStoredAuthToken();
@@ -160,6 +176,27 @@ export async function createBillingPortal(): Promise<BillingRedirectResponse> {
   }
 
   return res.json();
+}
+
+export async function getServiceHealth(): Promise<ServiceHealthResponse> {
+  const res = await fetch(`${API_BASE}/api/health`, {
+    headers: buildHeaders(),
+  });
+  const body = await res.json().catch(() => null) as ServiceHealthResponse | { error?: string } | null;
+
+  if (!body) {
+    throw new Error("Failed to load deployment capabilities.");
+  }
+
+  if (!res.ok && res.status !== 503) {
+    throw new Error("error" in body ? body.error || "Failed to load deployment capabilities." : "Failed to load deployment capabilities.");
+  }
+
+  if ("error" in body) {
+    throw new Error(body.error || "Failed to load deployment capabilities.");
+  }
+
+  return body as ServiceHealthResponse;
 }
 
 export async function uploadAndConvert(

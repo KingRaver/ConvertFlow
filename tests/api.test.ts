@@ -26,7 +26,7 @@ test("fetchDownloadBlob throws the server error for failed downloads", async () 
   await assert.rejects(
     () =>
       fetchDownloadBlob(
-        "/api/download/demo.txt",
+        "/api/download/test-download.txt",
         async () =>
           new Response(JSON.stringify({ error: "Download failed." }), {
             status: 404,

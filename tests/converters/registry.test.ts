@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SUPPORTED_CONVERSIONS } from "../../shared/schema";
+import { SUPPORTED_CONVERSIONS, SUPPORTED_FORMATS } from "../../shared/schema";
 import { registry } from "../../server/converters/registry";
 
 // Verify every route in SUPPORTED_CONVERSIONS has a registered adapter.
@@ -24,4 +24,9 @@ test("registry has an adapter for every supported conversion route", () => {
     [],
     `Missing adapters for routes: ${missing.join(", ")}`,
   );
+});
+
+test("public conversion metadata no longer advertises legacy .doc routes", () => {
+  assert.equal("doc" in SUPPORTED_CONVERSIONS, false);
+  assert.equal(SUPPORTED_FORMATS.includes("doc"), false);
 });

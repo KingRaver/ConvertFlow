@@ -3,6 +3,7 @@ import { runStartupMaintenance } from "./maintenance";
 import { startQueueWorkerRuntime } from "./queue";
 import { getLogger } from "./observability/logger";
 import { captureException, flushSentry, initSentry } from "./observability/sentry";
+import { validateRuntimeConfig } from "./runtime-config";
 
 try { (process as NodeJS.Process & { loadEnvFile?: () => void }).loadEnvFile?.(); } catch { /* no .env file in production */ }
 
@@ -10,6 +11,7 @@ const workerLogger = getLogger({ component: "worker" });
 
 async function main() {
   initSentry("convertflow-worker");
+  validateRuntimeConfig("worker");
   const maintenance = await runStartupMaintenance();
 
   if (maintenance.recovered > 0) {

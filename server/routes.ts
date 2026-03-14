@@ -71,9 +71,10 @@ import {
   scheduleConversionExpiryJob,
   startQueueServerRuntime,
 } from "./queue";
-import { storage } from "./storage";
+import { getStorage } from "./storage";
 import { createWebhookSecret, serializeWebhook } from "./webhooks";
 import { createZipArchive } from "./zip";
+import { validateRuntimeConfig } from "./runtime-config";
 
 const authCredentialsSchema = z.object({
   email: z.string().trim().email("A valid email address is required.").transform(normalizeEmail),
@@ -598,7 +599,7 @@ async function resolvePresetForRequest(userId: number | null, rawPresetId: unkno
     throw new HttpError(401, "Authentication required to use presets.");
   }
 
-  const preset = await storage.getPreset(presetId);
+  const preset = await getStorage().getPreset(presetId);
   if (!preset || preset.userId !== userId) {
     throw new HttpError(404, "Preset not found.");
   }
@@ -658,8 +659,8 @@ async function enforceConversionAllowance(
 
   const usageWindowStart = getStartOfCurrentUtcDay();
   const usageCount = owner.userId !== null
-    ? await storage.countUsageEventsSince(owner.userId, "conversion", usageWindowStart)
-    : await storage.countVisitorConversionsSince(owner.visitorId!, usageWindowStart);
+    ? await getStorage().countUsageEventsSince(owner.userId, "conversion", usageWindowStart)
+    : await getStorage().countVisitorConversionsSince(owner.visitorId!, usageWindowStart);
 
   if (usageCount + requestedConversions > planLimits.conversionsPerDay) {
     throw new HttpError(429, getDailyUsageExceededMessage(plan));
@@ -783,6 +784,7 @@ async function buildBatchArchive(conversions: Conversion[]) {
 }
 
 export async function registerRoutes(httpServer: Server, app: Express) {
+  validateRuntimeConfig("api");
   app.use(requestLogger);
 
   const authRateLimit = createRateLimiter(
@@ -827,13 +829,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(400).json({ error: getValidationMessage(parsed.error) });
     }
 
-    const existingUser = await storage.getUserByEmail(parsed.data.email);
+    const existingUser = await getStorage().getUserByEmail(parsed.data.email);
     if (existingUser) {
       return res.status(409).json({ error: "An account already exists for that email." });
     }
 
     const passwordHash = await hashPassword(parsed.data.password);
-    const { user, session } = await storage.createUserWithSession(
+    const { user, session } = await getStorage().createUserWithSession(
       {
         email: parsed.data.email,
         passwordHash,
@@ -857,12 +859,12 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(400).json({ error: getValidationMessage(parsed.error) });
     }
 
-    const user = await storage.getUserByEmail(parsed.data.email);
+    const user = await getStorage().getUserByEmail(parsed.data.email);
     if (!user || !(await verifyPassword(parsed.data.password, user.passwordHash))) {
       return res.status(401).json({ error: "Invalid email or password." });
     }
 
-    const session = await storage.createSession({
+    const session = await getStorage().createSession({
       userId: user.id,
       token: createSessionToken(),
       expiresAt: createSessionExpiry(),
@@ -876,7 +878,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
   app.post("/api/auth/logout", requireAuth, async (req: Request, res: Response) => {
     if (req.authToken) {
-      await storage.deleteSessionByToken(req.authToken);
+      await getStorage().deleteSessionByToken(req.authToken);
     }
 
     return res.status(204).end();
@@ -908,7 +910,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
   });
 
   app.get("/api/keys", requireAuth, async (req: Request, res: Response) => {
-    const apiKeys = await storage.listApiKeys(req.user!.id);
+    const apiKeys = await getStorage().listApiKeys(req.user!.id);
     return res.json({
       items: apiKeys.map((apiKey) => serializeApiKey(apiKey)),
     });
@@ -921,7 +923,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
 
     const rawToken = createApiKeyToken();
-    const apiKey = await storage.createApiKey({
+    const apiKey = await getStorage().createApiKey({
       userId: req.user!.id,
       keyHash: hashSecret(rawToken),
       name: parsed.data.name,
@@ -941,7 +943,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(400).json({ error: "Invalid API key id." });
     }
 
-    const revoked = await storage.revokeApiKey(id, req.user!.id);
+    const revoked = await getStorage().revokeApiKey(id, req.user!.id);
     if (!revoked) {
       return res.status(404).json({ error: "API key not found." });
     }
@@ -955,7 +957,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return;
     }
 
-    const presets = await storage.listPresets(user.id);
+    const presets = await getStorage().listPresets(user.id);
     return res.json({
       items: presets.map((preset) => serializePreset(preset)),
     });
@@ -980,7 +982,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         parsed.data.options,
       );
 
-      const preset = await storage.createPreset({
+      const preset = await getStorage().createPreset({
         userId: user.id,
         name: parsed.data.name,
         sourceFormat: parsed.data.sourceFormat,
@@ -1011,7 +1013,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(400).json({ error: "Invalid preset id." });
     }
 
-    const deleted = await storage.deletePreset(id, user.id);
+    const deleted = await getStorage().deletePreset(id, user.id);
     if (!deleted) {
       return res.status(404).json({ error: "Preset not found." });
     }
@@ -1026,7 +1028,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
     }
 
     const secret = parsed.data.secret?.trim() || createWebhookSecret();
-    const webhook = await storage.createWebhook({
+    const webhook = await getStorage().createWebhook({
       userId: req.user!.id,
       url: parsed.data.url,
       events: parsed.data.events,
@@ -1045,7 +1047,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(400).json({ error: "Invalid webhook id." });
     }
 
-    const deleted = await storage.deleteWebhook(id, req.user!.id);
+    const deleted = await getStorage().deleteWebhook(id, req.user!.id);
     if (!deleted) {
       return res.status(404).json({ error: "Webhook not found." });
     }
@@ -1063,7 +1065,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(400).json({ error: getValidationMessage(parsed.error) });
     }
 
-    const user = await storage.getUserById(req.user!.id);
+    const user = await getStorage().getUserById(req.user!.id);
     if (!user) {
       return res.status(401).json({ error: "Authentication required." });
     }
@@ -1086,7 +1088,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       });
 
       if (session.customerId !== user.stripeCustomerId) {
-        await storage.updateUser(user.id, {
+        await getStorage().updateUser(user.id, {
           stripeCustomerId: session.customerId,
         });
       }
@@ -1103,7 +1105,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(503).json({ error: "Stripe billing is not configured." });
     }
 
-    const user = await storage.getUserById(req.user!.id);
+    const user = await getStorage().getUserById(req.user!.id);
     if (!user) {
       return res.status(401).json({ error: "Authentication required." });
     }
@@ -1200,7 +1202,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           })),
         ));
 
-        const existingKey = await storage.getIdempotencyKey(idempotencyKeyHash, { userId: user.id });
+        const existingKey = await getStorage().getIdempotencyKey(idempotencyKeyHash, { userId: user.id });
         if (existingKey) {
           cleanupUploadedFiles(files);
           if (existingKey.requestHash !== batchRequestHash) {
@@ -1224,7 +1226,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         persistedInputKeys.push(inputKey);
       }
 
-      const result = await storage.createBatchWithConversions(
+      const result = await getStorage().createBatchWithConversions(
         {
           userId: user.id,
           status: "pending",
@@ -1268,11 +1270,11 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         );
       }
 
-      const syncedBatch = await storage.syncBatch(batch.id) ?? batch;
+      const syncedBatch = await getStorage().syncBatch(batch.id) ?? batch;
       const responseBody = serializeBatch(syncedBatch, createdConversions);
 
       if (idempotencyKeyHash && batchRequestHash) {
-        await storage.createIdempotencyKey({
+        await getStorage().createIdempotencyKey({
           keyHash: idempotencyKeyHash,
           requestHash: batchRequestHash,
           responseStatus: 201,
@@ -1301,13 +1303,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       await Promise.all([
         ...createdConversions.map(async (conversion) => {
           try {
-            await storage.deleteConversion(conversion.id);
+            await getStorage().deleteConversion(conversion.id);
           } catch (deleteError) {
             getRequestLogger(req).error({ conversionId: conversion.id, err: deleteError }, "Failed to delete conversion record");
           }
         }),
         ...(batch
-          ? [storage.deleteBatch(batch.id).catch((deleteError: unknown) => {
+          ? [getStorage().deleteBatch(batch.id).catch((deleteError: unknown) => {
               getRequestLogger(req).error({ batchId: batch!.id, err: deleteError }, "Failed to delete batch record");
             })]
           : []),
@@ -1333,17 +1335,17 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(400).json({ error: "Invalid batch id." });
     }
 
-    const batch = await storage.getBatch(id);
+    const batch = await getStorage().getBatch(id);
     if (!batch || batch.userId !== user.id) {
       return res.status(404).json({ error: "Batch not found." });
     }
 
-    const syncedBatch = await storage.syncBatch(batch.id);
+    const syncedBatch = await getStorage().syncBatch(batch.id);
     if (!syncedBatch) {
       return res.status(404).json({ error: "Batch not found." });
     }
 
-    const jobs = await storage.listBatchConversions(id);
+    const jobs = await getStorage().listBatchConversions(id);
     return res.json(serializeBatch(syncedBatch, jobs));
   });
 
@@ -1358,13 +1360,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(400).json({ error: "Invalid batch id." });
     }
 
-    const batch = await storage.getBatch(id);
+    const batch = await getStorage().getBatch(id);
     if (!batch || batch.userId !== user.id) {
       return res.status(404).json({ error: "Batch not found." });
     }
 
     try {
-      const jobs = (await storage.listBatchConversions(id)).filter((conversion) => (
+      const jobs = (await getStorage().listBatchConversions(id)).filter((conversion) => (
         conversion.status === "completed" &&
         conversion.outputFilename !== null &&
         (!conversion.expiresAt || conversion.expiresAt.getTime() > Date.now())
@@ -1437,7 +1439,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           presetId,
         });
 
-        const existingKey = await storage.getIdempotencyKey(
+        const existingKey = await getStorage().getIdempotencyKey(
           idempotencyKeyHash,
           buildIdempotencyScope(owner),
         );
@@ -1462,7 +1464,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       const expiresAt = getPlanRetentionDeadline(plan);
       inputKey = await persistUploadedFile(file);
 
-      conversion = await storage.createConversion({
+      conversion = await getStorage().createConversion({
         originalName: file.originalname,
         originalFormat: sourceFormat,
         targetFormat,
@@ -1493,7 +1495,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       logQueuedConversion(req, conversion, sourceFormat, targetFormat);
 
       if (idempotencyKeyHash && requestHash) {
-        await storage.createIdempotencyKey({
+        await getStorage().createIdempotencyKey({
           keyHash: idempotencyKeyHash,
           requestHash,
           responseStatus: 201,
@@ -1516,7 +1518,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         }
       }
       if (conversion) {
-        await storage.deleteConversion(conversion.id);
+        await getStorage().deleteConversion(conversion.id);
       }
       if (err instanceof HttpError) {
         return res.status(err.status).json({ error: err.message });
@@ -1538,7 +1540,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(400).json({ error: "Invalid conversion id." });
     }
 
-    const conversion = await storage.getConversion(id);
+    const conversion = await getStorage().getConversion(id);
     if (!conversion || !canAccessConversion(conversion, owner)) {
       return res.status(404).json({ error: "Conversion not found." });
     }
@@ -1562,7 +1564,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(400).json({ error: "Invalid conversion id." });
     }
 
-    const conversion = await storage.getConversion(id);
+    const conversion = await getStorage().getConversion(id);
     if (!conversion || !canAccessConversion(conversion, owner)) {
       return res.status(404).json({ error: "Conversion not found." });
     }
@@ -1594,7 +1596,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         1,
       );
 
-      const retried = await storage.updateConversion(conversion.id, {
+      const retried = await getStorage().updateConversion(conversion.id, {
         convertedSize: null,
         engineUsed: null,
         outputFilename: null,
@@ -1608,7 +1610,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       }
 
       if (retried.batchId) {
-        await storage.syncBatch(retried.batchId);
+        await getStorage().syncBatch(retried.batchId);
       }
 
       if (retried.expiresAt) {
@@ -1668,7 +1670,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return res.status(400).json({ error: "Invalid filename." });
     }
 
-    const conversion = await storage.getConversionByOutputFilename(filename);
+    const conversion = await getStorage().getConversionByOutputFilename(filename);
     if (!conversion || !canAccessConversion(conversion, owner)) {
       return res.status(404).json({ error: "Download not found." });
     }
@@ -1708,7 +1710,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       return;
     }
 
-    const result = await storage.listConversions({
+    const result = await getStorage().listConversions({
       ...parsedQuery.data,
       ...scope,
     });

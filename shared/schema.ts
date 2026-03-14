@@ -219,7 +219,6 @@ const videoGifOptionsSchema = z.object({
 export const SUPPORTED_CONVERSIONS: Record<string, string[]> = {
   "pdf": ["docx", "jpg", "png", "txt", "csv"],
   "docx": ["pdf", "txt"],
-  "doc": ["pdf", "txt"],
   "png": ["jpg", "webp", "pdf"],
   "jpg": ["png", "webp", "pdf"],
   "jpeg": ["png", "webp", "pdf"],
@@ -297,7 +296,7 @@ export const SUPPORTED_FORMATS = Array.from(
 ).sort();
 
 export const FORMAT_CATEGORIES: Record<string, { label: string; formats: string[]; icon: string }> = {
-  "documents": { label: "Documents", formats: ["pdf", "docx", "doc", "txt"], icon: "FileText" },
+  "documents": { label: "Documents", formats: ["pdf", "docx", "txt"], icon: "FileText" },
   "images": { label: "Images", formats: ["png", "jpg", "jpeg", "webp", "gif", "svg", "bmp", "tiff"], icon: "Image" },
   "audio": { label: "Audio", formats: ["mp3", "wav", "ogg"], icon: "Music" },
   "video": { label: "Video", formats: ["mp4", "gif"], icon: "Video" },

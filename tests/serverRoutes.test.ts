@@ -5,14 +5,14 @@ import { createServer } from "node:http";
 import { expireConversionRecord } from "../server/conversion-jobs";
 import { registerRoutes } from "../server/routes";
 import { VISITOR_ID_HEADER } from "../shared/visitor";
-import { storage } from "../server/storage";
+import { getStorage } from "../server/storage";
 
 const VISITOR_A = "cf_55555555-5555-4555-8555-555555555555";
 const VISITOR_B = "cf_66666666-6666-4666-8666-666666666666";
 let emailCounter = 0;
 
 async function cleanupConversion(id: number) {
-  const conversion = await storage.getConversion(id);
+  const conversion = await getStorage().getConversion(id);
   if (!conversion) {
     return;
   }
@@ -60,11 +60,11 @@ async function startServer() {
   };
 }
 
-async function createDemoJob(baseUrl: string, visitorId: string) {
+async function createInvalidPdfJob(baseUrl: string, visitorId: string) {
   const formData = new FormData();
   formData.append(
     "file",
-    new File([Buffer.from("%PDF-demo")], "sample.pdf", { type: "application/pdf" }),
+    new File([Buffer.from("%PDF-invalid")], "sample.pdf", { type: "application/pdf" }),
   );
   formData.append("targetFormat", "docx");
 
@@ -159,7 +159,7 @@ test("route handlers scope job status and history to the current visitor", async
     await server.close();
   });
 
-  const created = await createDemoJob(server.baseUrl, VISITOR_A);
+  const created = await createInvalidPdfJob(server.baseUrl, VISITOR_A);
   t.after(async () => {
     await cleanupConversion(created.id);
   });
@@ -255,7 +255,7 @@ test("free accounts are blocked after reaching the daily conversion limit", asyn
   const account = await registerUser(server.baseUrl);
 
   for (let index = 0; index < 10; index += 1) {
-    await storage.createUsageEvent({
+    await getStorage().createUsageEvent({
       eventType: "conversion",
       fileSize: 1024,
       format: "txt->docx",
@@ -313,7 +313,7 @@ test("pro accounts receive longer retention and usage metering on successful con
   });
 
   const account = await registerUser(server.baseUrl);
-  await storage.updateUser(account.user.id, {
+  await getStorage().updateUser(account.user.id, {
     plan: "pro",
   });
 
@@ -345,7 +345,7 @@ test("pro accounts receive longer retention and usage metering on successful con
   assert.equal(settled.status, "completed");
   await cleanupConversion(created.id);
 
-  const usageCount = await storage.countUsageEventsSince(
+  const usageCount = await getStorage().countUsageEventsSince(
     account.user.id,
     "conversion",
     new Date(beforeUpload - 1_000),
@@ -401,8 +401,8 @@ test("failed jobs expose their error status but no downloadable output", async (
     await server.close();
   });
 
-  // createDemoJob sends "%PDF-demo" — not a real PDF, so pdf→docx will fail
-  const created = await createDemoJob(server.baseUrl, VISITOR_A);
+  // createInvalidPdfJob sends invalid PDF bytes, so pdf→docx will fail.
+  const created = await createInvalidPdfJob(server.baseUrl, VISITOR_A);
   const status = await waitForSettledJob(server.baseUrl, {
     [VISITOR_ID_HEADER]: VISITOR_A,
   }, created.id);
@@ -417,6 +417,32 @@ test("failed jobs expose their error status but no downloadable output", async (
   await cleanupConversion(created.id);
 });
 
+test("legacy .doc uploads are rejected because the route is no longer advertised", async (t) => {
+  const server = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new File([Buffer.from("legacy document placeholder")], "sample.doc", { type: "application/msword" }),
+  );
+  formData.append("targetFormat", "pdf");
+
+  const response = await fetch(`${server.baseUrl}/api/convert`, {
+    method: "POST",
+    headers: {
+      [VISITOR_ID_HEADER]: VISITOR_A,
+    },
+    body: formData,
+  });
+  const json = await response.json() as { error: string };
+
+  assert.equal(response.status, 400);
+  assert.equal(json.error, "Unsupported file format: .doc");
+});
+
 test("GET /api/convert/:id returns 404 and cleans up an expired conversion", async (t) => {
   const server = await startServer();
   t.after(async () => {
@@ -424,7 +450,7 @@ test("GET /api/convert/:id returns 404 and cleans up an expired conversion", asy
   });
 
   // Insert an already-expired record directly into the shared MemStorage singleton.
-  const expired = await storage.createConversion({
+  const expired = await getStorage().createConversion({
     originalName: "old.txt",
     originalFormat: "txt",
     targetFormat: "docx",
@@ -449,7 +475,7 @@ test("GET /api/convert/:id returns 404 and cleans up an expired conversion", asy
 
   // The route should have deleted the record.
   assert.equal(
-    await storage.getConversion(expired.id),
+    await getStorage().getConversion(expired.id),
     undefined,
     "expired record should be deleted from storage",
   );

@@ -14,10 +14,11 @@ import {
 import { databaseUrl } from "./db";
 import { ensureWorkingDirectories } from "./files";
 import { cleanupExpiredConversions } from "./maintenance";
-import { storage } from "./storage";
+import { getStorage } from "./storage";
 import { type WebhookDeliveryPayload, processWebhookDelivery } from "./webhooks";
 import { getLogger } from "./observability/logger";
 import { captureException } from "./observability/sentry";
+import { resolveRuntimeConfig, validateRuntimeConfig, type QueueRuntimeKind } from "./runtime-config";
 
 const QUEUE_JOB_TIMEOUT_SECONDS = Math.ceil(CONVERTER_TIMEOUT_MS / 1000);
 const EXPIRY_SWEEP_INTERVAL_CRON = "*/10 * * * *";
@@ -107,8 +108,8 @@ async function enqueueWebhookJobsForConversion(
     return;
   }
 
-  const matchingWebhooks = await storage.listWebhooksForEvent(conversion.userId, event);
-  await Promise.all(matchingWebhooks.map((webhook) => queueRuntime.scheduleWebhookDeliveryJob({
+  const matchingWebhooks = await getStorage().listWebhooksForEvent(conversion.userId, event);
+  await Promise.all(matchingWebhooks.map((webhook) => getQueueRuntime().scheduleWebhookDeliveryJob({
     attempt: 0,
     conversionId: conversion.id,
     event,
@@ -121,7 +122,7 @@ function defaultQueueErrorHandler(error: unknown) {
   captureException(error, {
     contexts: {
       queue: {
-        runtime: queueRuntime.kind,
+        runtime: getQueueRuntime().kind,
       },
     },
     tags: {
@@ -131,6 +132,10 @@ function defaultQueueErrorHandler(error: unknown) {
 }
 
 function shouldEmbedWorker() {
+  if (getQueueRuntime().kind === "memory") {
+    return true;
+  }
+
   const configured = process.env.EMBEDDED_CONVERSION_WORKER?.trim().toLowerCase();
 
   if (configured === "true") {
@@ -141,7 +146,7 @@ function shouldEmbedWorker() {
     return false;
   }
 
-  return !databaseUrl || process.env.NODE_ENV !== "production";
+  return process.env.NODE_ENV !== "production";
 }
 
 class MemoryQueueRuntime implements QueueRuntime {
@@ -624,70 +629,83 @@ class PgBossQueueRuntime implements QueueRuntime {
   }
 }
 
-const queueRuntime: QueueRuntime = databaseUrl
-  ? new PgBossQueueRuntime()
-  : new MemoryQueueRuntime();
+let _queueRuntime: QueueRuntime | null = null;
+
+function getQueueRuntime(): QueueRuntime {
+  if (!_queueRuntime) {
+    validateRuntimeConfig();
+    _queueRuntime = resolveRuntimeConfig().queueRuntime === "pg-boss"
+      ? new PgBossQueueRuntime()
+      : new MemoryQueueRuntime();
+  }
+
+  return _queueRuntime;
+}
+
+export function getQueueRuntimeKind(): QueueRuntimeKind {
+  return resolveRuntimeConfig().queueRuntime;
+}
 
 export async function startQueueServerRuntime(httpServer: Server, options?: QueueStartOptions) {
   ensureWorkingDirectories();
 
-  const embeddedWorker = queueRuntime.kind === "memory"
+  const embeddedWorker = getQueueRuntime().kind === "memory"
     ? true
     : options?.embeddedWorker ?? shouldEmbedWorker();
 
-  await queueRuntime.startServer({
+  await getQueueRuntime().startServer({
     embeddedWorker,
     onError: options?.onError,
   });
 
   httpServer.once("close", () => {
-    void queueRuntime.stop().catch((error) => {
+    void getQueueRuntime().stop().catch((error: unknown) => {
       (options?.onError ?? defaultQueueErrorHandler)(error);
     });
   });
 
   return {
     embeddedWorker,
-    kind: queueRuntime.kind,
+    kind: getQueueRuntime().kind,
   };
 }
 
 export async function startQueueWorkerRuntime(options?: QueueStartOptions) {
   ensureWorkingDirectories();
 
-  await queueRuntime.startWorker({
+  await getQueueRuntime().startWorker({
     embeddedWorker: true,
     onError: options?.onError,
   });
 
   return {
-    kind: queueRuntime.kind,
-    stop: () => queueRuntime.stop(),
+    kind: getQueueRuntime().kind,
+    stop: () => getQueueRuntime().stop(),
   };
 }
 
 export async function enqueueConversionJob(payload: ConversionJobPayload) {
-  await queueRuntime.enqueueConversionJob(payload);
+  await getQueueRuntime().enqueueConversionJob(payload);
 }
 
 export async function scheduleConversionExpiryJob(
   payload: ExpiryJobPayload,
   runAt: Date,
 ) {
-  await queueRuntime.scheduleExpiryJob(payload, runAt);
+  await getQueueRuntime().scheduleExpiryJob(payload, runAt);
 }
 
 export async function scheduleWebhookDeliveryJob(
   payload: WebhookDeliveryPayload,
   runAt?: Date,
 ) {
-  await queueRuntime.scheduleWebhookDeliveryJob(payload, runAt);
+  await getQueueRuntime().scheduleWebhookDeliveryJob(payload, runAt);
 }
 
 export async function getQueueMetricSamples() {
-  return queueRuntime.getMetricSamples();
+  return getQueueRuntime().getMetricSamples();
 }
 
 export async function getQueueHealthStatus() {
-  return queueRuntime.getHealthStatus();
+  return getQueueRuntime().getHealthStatus();
 }

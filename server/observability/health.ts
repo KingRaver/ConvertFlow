@@ -1,6 +1,9 @@
+import { isBillingConfigured } from "../billing";
+import { isLegacyDocConverterAvailable } from "../converters/runtime";
 import { filestore } from "../filestore";
 import { db, pool } from "../db";
-import { getQueueHealthStatus } from "../queue";
+import { getQueueHealthStatus, getQueueRuntimeKind } from "../queue";
+import { getStorageRuntimeKind } from "../storage";
 import { getLogger } from "./logger";
 
 const healthLogger = getLogger({ component: "health" });
@@ -8,6 +11,8 @@ const healthLogger = getLogger({ component: "health" });
 export type HealthStatus = "error" | "ok";
 
 export async function getHealthStatus() {
+  const billingConfigured = isBillingConfigured();
+  const legacyDocConverterAvailable = isLegacyDocConverterAvailable();
   const [dbStatus, queueStatus, storageStatus] = await Promise.all([
     checkDatabaseHealth(),
     checkQueueHealth(),
@@ -19,8 +24,17 @@ export async function getHealthStatus() {
     : "error";
 
   return {
+    capabilities: {
+      billingConfigured,
+      legacyDocConverterAvailable,
+    },
     db: dbStatus,
     queue: queueStatus,
+    runtime: {
+      filestore: filestore.driver,
+      queue: getQueueRuntimeKind(),
+      storage: getStorageRuntimeKind(),
+    },
     status,
     storage: storageStatus,
   };

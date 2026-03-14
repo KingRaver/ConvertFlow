@@ -1,7 +1,7 @@
 import process from "node:process";
 import Stripe from "stripe";
 import type { User, UserPlan } from "@shared/schema";
-import { storage, type IStorage } from "./storage";
+import { getStorage, type IStorage } from "./storage";
 import { getLogger } from "./observability/logger";
 
 const billingLogger = getLogger({ component: "billing" });
@@ -286,7 +286,7 @@ async function syncCanceledSubscription(
 
 export async function syncStripeBillingEvent(
   event: Stripe.Event,
-  activeStorage: IStorage = storage,
+  activeStorage: IStorage = getStorage(),
 ) {
   switch (event.type) {
     case "customer.subscription.created":

@@ -1,479 +1,119 @@
-# ConvertFlow Build Checklist
-
-Phased implementation plan for turning the current demo into a real file conversion platform. Each item is tied to specific files and functions in the existing codebase.
-
----
-
-## Phase 1: Real Conversion Engine
-
-**Goal:** Replace `runDemoConversion()` with real output files. The download endpoint already exists — it just needs actual files to serve.
-
-### 1.1 Converter adapter layer
-
-- [x] Create `server/converters/` directory
-- [x] Define `ConverterAdapter` interface in `server/converters/index.ts`:
-  ```ts
-  interface ConverterAdapter {
-    convert(inputPath: string, outputPath: string): Promise<void>;
-  }
-  ```
-- [x] Create one file per format family:
-  - `server/converters/image.ts` — handles all image→image routes
-  - `server/converters/document.ts` — handles PDF/DOCX/DOC/TXT routes
-  - `server/converters/data.ts` — handles CSV/XLSX/JSON routes
-  - `server/converters/audio.ts` — handles MP3/WAV/OGG routes
-  - `server/converters/video.ts` — handles MP4/GIF routes
-- [x] Create `server/converters/registry.ts` that maps `sourceFormat→targetFormat` to the correct adapter
-- [x] Replace `runDemoConversion()` in `server/routes.ts` with a call to `registry.getAdapter(sourceFormat, targetFormat).convert(inputPath, outputPath)`
+# ConvertFlow Deployment Guide
 
-### 1.2 Image conversions (sharp)
+This document describes the current runtime, deployment requirements, and release checks for ConvertFlow. It replaces the older phased plan that referred to demo-era conversion code.
 
-- [x] Install `sharp`
-- [x] Implement `server/converters/image.ts` using `sharp`
-- [x] Cover routes: `png→jpg`, `png→webp`, `jpg→png`, `jpg→webp`, `webp→png`, `webp→jpg`, `svg→png`, `svg→jpg`, `bmp→png`, `bmp→jpg`, `tiff→png`, `tiff→jpg`, `gif→png`, `gif→jpg`
-- [x] For `image→pdf` routes (`png→pdf`, `jpg→pdf`): embed image in a PDF using `pdf-lib`
+## Current Runtime
 
-### 1.3 Document conversions
+ConvertFlow ships a real conversion pipeline:
 
-- [x] Install the document conversion stack: `pdf-parse`, `mammoth`, `docx`, and `pdfkit`
-- [x] Implement `server/converters/document.ts`:
-  - `docx→pdf` via `mammoth` text extraction + `pdfkit`
-  - `doc→pdf` and `doc→txt` via `textutil` fallback
-  - `pdf→txt` via `pdf-parse`
-  - `pdf→jpg` and `pdf→png` via `pdf-parse` screenshots
-  - `pdf→docx` via `pdf-parse` + `docx` builder
-  - `txt→pdf` via `pdfkit`
-  - `txt→docx` via `docx`
-  - `docx→txt` via `mammoth`
-- [x] Document the document-conversion runtime in `server/converters/README.md`, including the current `textutil` dependency for `.doc`
+- `server/converters/` contains the adapter families for document, image, audio, video, and data routes.
+- `server/conversion-jobs.ts` runs queued conversions, validates outputs, stores artifacts, and updates job records.
+- `server/queue.ts` uses `pg-boss` when PostgreSQL is configured and only falls back to the in-memory queue when `ALLOW_MEMORY_STORAGE=true` is explicitly set.
+- `server/storage.ts` uses PostgreSQL-backed `DrizzleStorage` when `DATABASE_URL` is configured and only falls back to in-memory storage with the same explicit opt-in.
+- `server/filestore/` supports `local` and `s3` object storage backends.
+- Auth, API keys, presets, webhooks, quotas, and billing hooks are all part of the live server surface.
 
-### 1.4 Data conversions
+## Deployment Requirements
 
-- [x] Install `csv-parse`, `csv-stringify`, `xlsx`
-- [x] Audit `xlsx` v0.18.5 CVEs — replaced with `exceljs` (no known CVEs, actively maintained, supports untrusted input safely)
-- [x] Implement `server/converters/data.ts`:
-  - `csv→xlsx`: parse CSV with `csv-parse`, write with `xlsx`
-  - `csv→json`: parse CSV, serialize to JSON file
-  - `xlsx→csv`: read with `xlsx`, stringify with `csv-stringify`
-  - `xlsx→json`: read with `xlsx`, serialize to JSON file
+### Durable runtime
 
-### 1.5 Audio conversions (ffmpeg)
+- `DATABASE_URL` is required for any deployable environment.
+- `ALLOW_MEMORY_STORAGE=true` is a local-only escape hatch for isolated development and tests.
+- A standalone worker (`npm run worker`) requires PostgreSQL. The worker does not start in memory mode.
+- `/api/health` exposes the active storage runtime, queue runtime, and file-store driver so deployment mistakes are visible immediately.
 
-- [x] Install `ffmpeg-static` (converters call the binary directly via `runCommand` — `fluent-ffmpeg` is not needed)
-- [x] Implement `server/converters/audio.ts`:
-  - `mp3→wav`, `mp3→ogg`, `wav→mp3`, `wav→ogg`
-- [x] Confirm `ffmpeg-static` binary path is resolved correctly on the target OS
+### File storage signing
 
-### 1.6 Video conversions (ffmpeg)
+- If `STORAGE_DRIVER=local`, you must set `LOCAL_FILESTORE_SIGNING_SECRET` or `SESSION_SECRET`.
+- Local download signing no longer falls back to an insecure default.
+- `STORAGE_DRIVER=s3` does not require the local signing secret, but it does require the usual AWS credentials and bucket settings.
 
-- [x] Implement `server/converters/video.ts` using the ffmpeg runtime:
-  - `mp4→gif`: extract frames and encode as GIF with configurable FPS and palette
-  - `mp4→mp3`: extract audio stream
-  - `mp4→wav`: extract audio stream as WAV
-  - `gif→mp4`: encode GIF frames as MP4
+### Billing capability
 
-### 1.7 Wire output files into job lifecycle
+- Stripe billing is optional.
+- When Stripe is not configured, the backend keeps returning explicit `503` responses for checkout and portal routes.
+- The pricing UI reads backend capability data and disables upgrade actions when billing is unavailable instead of presenting checkout as live.
 
-- [x] In `server/routes.ts`, generate `outputFilename` before calling the converter:
-  ```ts
-  const outputFilename = `${uuidv4()}.${targetFormat}`;
-  const outputPath = path.join(OUTPUT_DIR, outputFilename);
-  ```
-- [x] After successful conversion, update the job with `outputFilename` and `convertedSize` (from `fs.statSync(outputPath).size`)
-- [x] Update `scheduleConversionExpiry` to include `outputPath` in `filesToDelete`
-- [x] Confirm `GET /api/download/:filename` in `server/routes.ts` serves the real file (it already will once `outputPath` exists)
+### Legacy `.doc` handling
 
-### 1.8 Output validation
+- `.doc` adapters still exist internally behind the legacy `textutil` runtime.
+- `.doc` is no longer advertised in `SUPPORTED_CONVERSIONS`, route pages, or the public format map because the runtime is not deployment-portable.
+- If `.doc` must return to the public product surface, replace the `textutil` dependency with a portable converter or gate the route by deployment target.
 
-- [x] After conversion, verify the output file:
-  - Exists on disk
-  - Size is greater than zero
-  - For images: readable by `sharp` without error
-  - For documents: readable by the relevant parser
-- [x] If validation fails, mark job as `failed` with a specific `resultMessage`
+### Queue infrastructure
 
-### 1.9 Error handling and retries
+- Redis is not used.
+- Queueing is implemented with `pg-boss` on top of PostgreSQL.
 
-- [x] Catch converter-specific errors and map them to meaningful `resultMessage` strings
-- [x] Add a `processingStartedAt` field to track when conversion began
-- [x] Add a conversion timeout: if a converter takes longer than 60 seconds, kill it and mark as failed
+## Environment Variables
 
-### 1.10 Tests
+Core runtime:
 
-- [x] Add integration tests in `tests/converters/` that run each adapter against a real fixture file
-- [x] Add fixture files in `tests/fixtures/` and generate the remaining binary fixtures during the test run
-- [x] Assert: output file exists, size > 0, correct extension, passes format-specific validation
-- [x] Add `tests/converters/registry.test.ts` that verifies every route in `SUPPORTED_CONVERSIONS` has a registered adapter — catches schema/adapter gaps at test time rather than runtime
-
----
-
-## Phase 2: Durable Job Storage
-
-**Goal:** Replace `MemStorage` with PostgreSQL so jobs survive restarts.
-
-### 2.1 Connect Drizzle to PostgreSQL
-
-- [x] Add `DATABASE_URL` to `.env` and `.env.example`
-- [x] Create `server/db.ts` that initializes `drizzle(pool)` using `pg` and `DATABASE_URL`
-- [x] Run `npm run db:push` to create the `conversions` table (schema already defined in `shared/schema.ts`)
-
-### 2.2 Implement DrizzleStorage
-
-- [x] Create `server/storage/drizzle.ts` that implements the existing `IStorage` interface from `server/storage.ts`
-- [x] Implement all five methods using Drizzle queries against the `conversions` table
-- [x] Export a `DrizzleStorage` class alongside the existing `MemStorage`
-
-### 2.3 Swap storage at startup
-
-- [x] In `server/storage.ts`, check for `DATABASE_URL` at module init:
-  - If present, export a `DrizzleStorage` instance
-  - If absent, export the existing `MemStorage` instance (keeps dev/test simple)
-- [x] No changes needed to `server/routes.ts` — it imports `storage` and calls the interface
-
-### 2.4 Job expiry with durable storage
-
-- [x] Replace the `setTimeout`-based expiry in `server/routes.ts` with a database-driven approach:
-  - Add a `GET /api/convert/:id` check: if `expiresAt < now`, delete and return 404 (already partially done)
-  - Add a cleanup job (see Phase 3) that periodically hard-deletes expired rows and their files
-
-### 2.5 Add missing fields to schema
-
-- [x] Add `processingStartedAt: timestamp` to `conversions` table in `shared/schema.ts`
-- [x] Add `engineUsed: text` to record which converter adapter handled the job
-- [x] Run migration
-
-### 2.6 Stuck job recovery on startup
-
-- [x] On server startup, run: `UPDATE conversions SET status = 'failed', result_message = 'Server restarted during processing.' WHERE status = 'processing' AND processing_started_at < now() - interval '5 minutes'`
-- [x] This handles jobs that were in-flight when the process was killed — with in-memory storage they disappear on restart, but with PostgreSQL they would remain stuck in `processing` indefinitely without this recovery step
-
----
-
-## Phase 3: Background Job Queue
-
-**Goal:** Move conversion out of the HTTP request handler so uploads return immediately and workers process jobs independently.
-
-### 3.1 Choose and install a queue
-
-- [x] Install `pg-boss` (uses existing PostgreSQL, no new infra)
-- [x] Wire queue startup into the server lifecycle with a memory fallback for local/test runs
-- [x] Redis config is not needed because Phase 3 uses `pg-boss`, not `bullmq`
-
-### 3.2 Queue producer
-
-- [x] In `server/routes.ts` `POST /api/convert` handler:
-  - Create the job record with `status: "pending"` (not `"processing"`)
-  - Enqueue a job with payload `{ conversionId, inputPath, sourceFormat, targetFormat }`
-  - Return 201 immediately without `await`ing conversion
-
-### 3.3 Queue worker
-
-- [x] Create `server/worker.ts` as a separate entry point
-- [x] Worker subscribes to family-specific conversion queues
-- [x] On each job:
-  1. Load conversion record from storage
-  2. Set `status: "processing"`, `processingStartedAt: now`
-  3. Call `registry.getAdapter(sourceFormat, targetFormat).convert(inputPath, outputPath)`
-  4. On success: update `status: "completed"`, `outputFilename`, `convertedSize`, `engineUsed`
-  5. On failure: update `status: "failed"`, `resultMessage` with error detail
-  6. Delete input file
-  7. Schedule expiry cleanup via the queue using the job `expiresAt`
-- [x] Add worker startup to `package.json` scripts: `"worker": "tsx server/worker.ts"`
-
-### 3.4 Expiry worker
-
-- [x] Add a recurring job (every 10 minutes) that:
-  - Queries conversions where `expiresAt < now`
-  - Deletes output files from disk
-  - Hard-deletes conversion records
-- [x] Replace the old interval-based expiry sweep with queue-driven cleanup jobs
-
-### 3.5 Concurrency and limits
-
-- [x] Set worker concurrency per format family (image jobs can run 4 parallel; document jobs 2; video jobs 1)
-- [x] Add a job timeout at the queue level matching the per-converter timeout
-
----
-
-## Phase 4: Object Storage
-
-**Goal:** Move uploaded and output files off local disk so the app is stateless and horizontally scalable.
-
-### 4.1 Storage adapter interface
-
-- [x] Create `server/filestore/index.ts` with interface:
-  ```ts
-  interface FileStore {
-    save(localPath: string, key: string): Promise<void>;
-    get(key: string, localPath: string): Promise<void>;
-    delete(key: string): Promise<void>;
-    getDownloadUrl(key: string, filename: string): Promise<string>;
-  }
-  ```
-- [x] Implement `server/filestore/local.ts` — wraps existing local disk behavior (used in dev/test)
-- [x] Implement `server/filestore/s3.ts` — uses `@aws-sdk/client-s3` and `@aws-sdk/s3-request-presigner`
-
-### 4.2 Upload flow with object storage
-
-- [x] After Multer writes the file to `/uploads`, upload to object storage with key `uploads/{uuid}.{ext}`
-- [x] Delete the local temp file after upload
-- [x] Worker downloads the file from object storage to a temp path before converting
-- [x] Worker uploads the output to object storage with key `outputs/{uuid}.{targetFormat}`
-- [x] Worker deletes the input key from object storage
-
-### 4.3 Download flow with object storage
-
-- [x] `GET /api/download/:filename` generates a pre-signed URL (15-minute expiry) and redirects to it
-- [x] Remove local `OUTPUT_DIR` file serving
-
-### 4.4 Environment config
-
-- [x] Add to `.env`: `STORAGE_DRIVER=local|s3`, `AWS_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-- [x] Export `filestore` singleton from `server/filestore/index.ts` based on `STORAGE_DRIVER`
-
----
-
-## Phase 5: User Accounts and Auth
-
-**Goal:** Replace anonymous visitor scoping with real user accounts.
-
-### 5.1 Auth schema
-
-- [x] Add to `shared/schema.ts`:
-  - `users` table: `id`, `email`, `passwordHash`, `createdAt`, `role` (`user|admin`)
-  - `sessions` table: `id`, `userId`, `token`, `expiresAt`, `createdAt`
-- [x] Add `userId` (nullable) to `conversions` table — keep `visitorId` for unauthenticated users
-- [x] Run migrations
-
-### 5.2 Auth endpoints
-
-- [x] `POST /api/auth/register` — hash password securely, create user, return session token
-- [x] `POST /api/auth/login` — verify password, create session, return token
-- [x] `POST /api/auth/logout` — delete session
-- [x] `GET /api/auth/me` — return current user from session token
-
-### 5.3 Auth middleware
-
-- [x] Create `server/middleware/auth.ts`:
-  - `requireAuth` — validates `Authorization: Bearer <token>` header, attaches `req.user`
-  - `optionalAuth` — same but does not reject unauthenticated requests
-- [x] Apply `optionalAuth` to `POST /api/convert` — if user is authenticated, attach `userId` to the job
-- [x] Apply `requireAuth` to any account-specific routes
-
-### 5.4 Conversion history per user
-
-- [x] `GET /api/conversions` — if authenticated, return by `userId`; if not, return by `visitorId` (existing behavior)
-- [x] Add pagination: `?page=1&limit=20`
-- [x] Add filtering: `?status=completed`, `?format=pdf`
-
-### 5.5 Frontend auth
-
-- [x] Add login and register pages in `client/src/pages/`
-- [x] Add auth state to a React context (`client/src/context/AuthContext.tsx`)
-- [x] Store session token in `localStorage`
-- [x] Send `Authorization` header in `client/src/lib/api.ts` when token is present
-- [x] Show conversion history in a protected `/history` page
-
----
-
-## Phase 6: Metering, Limits, and Billing
-
-**Goal:** Enforce usage limits so the free tier is sustainable and paid tiers are differentiated.
-
-### 6.1 Usage tracking schema
-
-- [x] Add `plan` field to `users`: `free|pro|business`
-- [x] Add `usageEvents` table: `userId`, `eventType` (`conversion`), `format`, `fileSize`, `createdAt`
-- [x] Record a usage event on every successful conversion
-
-### 6.2 Limit enforcement
-
-- [x] Create `server/limits.ts` defining per-plan limits:
-  - `free`: 10 conversions/day, 10MB max file size, 1-hour retention
-  - `pro`: 500 conversions/day, 100MB max file size, 7-day retention
-  - `business`: unlimited conversions, 500MB max file size, 30-day retention
-- [x] In `POST /api/convert`: check today's usage count before accepting upload; reject with 429 if over limit
-- [x] Enforce file size limit per plan (override Multer's global 50MB limit dynamically)
-
-### 6.3 Stripe integration
-
-- [x] Install `stripe`
-- [x] Add `stripeCustomerId` and `stripeSubscriptionId` to `users` table
-- [x] `POST /api/billing/checkout` — create Stripe Checkout session for plan upgrade
-- [x] `POST /api/billing/portal` — create Stripe customer portal session for plan management
-- [x] `POST /api/billing/webhook` — handle `customer.subscription.updated` and `customer.subscription.deleted` to sync `plan` field
-- [x] Add `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` to `.env`
-
----
-
-## Phase 7: Public API and Developer Access
-
-**Goal:** Make conversions programmable so developers and other products can use ConvertFlow as infrastructure.
-
-### 7.1 API key schema
-
-- [x] Add `apiKeys` table: `id`, `userId`, `keyHash`, `name`, `lastUsedAt`, `createdAt`, `revokedAt`
-- [x] Store only the hash; show the raw key once at creation time
-
-### 7.2 API key management endpoints
-
-- [x] `GET /api/keys` — list user's API keys (names and last used, never raw keys)
-- [x] `POST /api/keys` — generate a new key, return raw value once
-- [x] `DELETE /api/keys/:id` — revoke a key
-
-### 7.3 API key authentication middleware
-
-- [x] Update `server/middleware/auth.ts` to also accept `Authorization: Bearer cf_<key>` format
-- [x] Look up key by hash; attach user; record `lastUsedAt`
-- [x] Apply to all `/api/convert`, `/api/download`, `/api/conversions` routes
-
-### 7.4 Webhook support
-
-- [x] Add `webhooks` table: `id`, `userId`, `url`, `events` (array), `secret`, `createdAt`
-- [x] `POST /api/webhooks` — register a webhook URL
-- [x] `DELETE /api/webhooks/:id` — remove a webhook
-- [x] On job completion or failure: POST to registered webhook URLs with `{ event: "conversion.completed", job: {...} }` signed with HMAC
-- [x] Use a retry queue for failed webhook deliveries (3 retries with backoff)
-
-### 7.5 Idempotency
-
-- [x] Accept `Idempotency-Key` header on `POST /api/convert`
-- [x] Store idempotency keys in a short-lived table (24h TTL)
-- [x] If same key is reused, return the original response without re-processing
-
-### 7.6 OpenAPI spec
-
-- [x] Create `docs/openapi.yaml` documenting all public endpoints
-- [x] Add `GET /api/docs` that serves Swagger UI or Redoc
-
----
-
-## Phase 8: Batch Jobs and Workflow Features
-
-**Goal:** Support multi-file and automated conversion workflows.
-
-### 8.1 Multi-file upload
-
-- [x] Change Multer config in `server/routes.ts` to accept `upload.array("files", 20)`
-- [x] Create a `batches` table: `id`, `userId`, `status`, `totalJobs`, `completedJobs`, `failedJobs`, `createdAt`
-- [x] `POST /api/batch` accepts multiple files, creates a batch record, enqueues all conversion jobs
-- [x] `GET /api/batch/:id` returns batch status and individual job statuses
-- [x] `GET /api/batch/:id/download` returns a ZIP of all completed output files
-
-### 8.2 Saved conversion presets
-
-- [x] Add `presets` table: `id`, `userId`, `name`, `sourceFormat`, `targetFormat`, `options` (JSON), `createdAt`
-- [x] `POST /api/presets` — save a preset
-- [x] `GET /api/presets` — list user's presets
-- [x] `DELETE /api/presets/:id` — delete a preset
-- [x] Accept `presetId` on `POST /api/convert` to apply saved options
-
-### 8.3 Job re-run
-
-- [x] `POST /api/convert/:id/retry` — re-enqueue a failed job using the original input file
-- [x] Only available while input file has not been deleted (within retention window)
-
-### 8.4 Conversion options
-
-- [x] Extend `SUPPORTED_CONVERSIONS` in `shared/schema.ts` to include per-route options schema (e.g., image quality, PDF page range, audio bitrate)
-- [x] Accept `options` JSON field on `POST /api/convert`
-- [x] Pass options through to converter adapters
-- [x] Validate options against per-route schema on intake
-
----
-
-## Phase 9: Observability
-
-**Goal:** Know exactly what is happening in production at all times.
-
-### 9.1 Structured logging
-
-- [x] Install `pino` and `pino-http`
-- [x] Replace all `console.log`/`console.error` with structured `logger` calls
-- [x] Log fields: `conversionId`, `visitorId`/`userId`, `sourceFormat`, `targetFormat`, `fileSize`, `durationMs`, `engineUsed`, `status`
-- [x] Add request logging middleware to Express
-
-### 9.2 Metrics
-
-- [x] Install `prom-client`
-- [x] Instrument: conversion count by route and status, processing duration histogram by route, queue depth, active worker count, file sizes
-- [x] Expose `GET /metrics` endpoint (restricted to internal/monitoring access)
-
-### 9.3 Health checks
-
-- [x] `GET /api/health` — returns `{ status: "ok", db: "ok"|"error", queue: "ok"|"error", storage: "ok"|"error" }`
-- [x] Used by load balancers and uptime monitors
-
-### 9.4 Error tracking
-
-- [x] Install `@sentry/node`
-- [x] Initialize in `server/index.ts` with `SENTRY_DSN` from env
-- [x] Capture unhandled exceptions, unhandled rejections, and converter errors with conversion context
-
----
-
-## Environment Variables Reference
-
-All variables that will be needed across phases:
-
-```
-# Core
-NODE_ENV=development|production
+```env
+NODE_ENV=development
 PORT=3000
-DATABASE_URL=postgresql://...
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/convertflow
+ALLOW_MEMORY_STORAGE=false
+EMBEDDED_CONVERSION_WORKER=true
+```
 
-# Storage
-STORAGE_DRIVER=local|s3
+Filestore:
+
+```env
+STORAGE_DRIVER=local
+LOCAL_FILESTORE_SIGNING_SECRET=replace-with-a-random-64-char-secret
+
+# S3 mode
 AWS_BUCKET=
 AWS_REGION=
 AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
-LOCAL_FILESTORE_SIGNING_SECRET=
+```
 
-# Queue (if using BullMQ)
-REDIS_URL=redis://localhost:6379
+Billing:
 
-# Auth
-SESSION_SECRET=
-
-# Billing
+```env
 STRIPE_SECRET_KEY=
 STRIPE_WEBHOOK_SECRET=
+```
 
-# Observability
+Observability:
+
+```env
 LOG_LEVEL=info
 MONITORING_TOKEN=
 SENTRY_DSN=
 ```
 
----
+## Local Development
 
-## Dependency Install Reference
+### Durable local setup
 
-```bash
-# Phase 1 — converters
-npm install sharp pdf-lib pdf-parse pdfkit mammoth docx libreoffice-convert
-npm install fluent-ffmpeg ffmpeg-static
-npm install csv-parse csv-stringify exceljs
+1. Start PostgreSQL.
+2. Set `DATABASE_URL`.
+3. Set `LOCAL_FILESTORE_SIGNING_SECRET`.
+4. Run `npm run dev`.
 
-# Phase 2 — database
-npm install pg drizzle-orm
-npm install -D drizzle-kit
+This matches the production architecture most closely.
 
-# Phase 3 — queue (pick one)
-npm install pg-boss           # postgres-based, no new infra
-npm install bullmq ioredis    # redis-based
+### Lightweight local setup
 
-# Phase 4 — object storage
-npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner
+1. Leave `DATABASE_URL` unset.
+2. Set `ALLOW_MEMORY_STORAGE=true`.
+3. Set `LOCAL_FILESTORE_SIGNING_SECRET`.
+4. Run `npm run dev`.
 
-# Phase 5 — auth
-npm install bcrypt jsonwebtoken
-npm install -D @types/bcrypt @types/jsonwebtoken
+This mode is intentionally non-durable. Jobs, sessions, history, presets, API keys, and queued work disappear on restart.
 
-# Phase 6 — billing
-npm install stripe
+## Release Checks
 
-# Phase 9 — observability
-npm install pino pino-http prom-client @sentry/node
-```
+Before shipping a deployment:
+
+1. Run `npm run check`, `npm test`, and the production build.
+2. Confirm `/api/health` reports the expected storage and queue runtimes.
+3. Verify that pricing and upgrade copy match the deployment's actual Stripe configuration.
+4. Review user-facing docs and OpenAPI descriptions for capability claims that depend on runtime configuration.
+
+## Historical Context
+
+Older docs in this repository referred to phased work such as replacing `runDemoConversion()` and adding a queue or durable storage. Those milestones are already complete. For current hardening work, use [audits/MOCK_REMOVAL.md](/Users/jeffspirlock/ConvertFlow/audits/MOCK_REMOVAL.md).

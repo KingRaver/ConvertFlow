@@ -4,30 +4,22 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { FileStore } from "./index";
 import { getLogger } from "../observability/logger";
+import { resolveLocalFilestoreSigningSecret } from "../runtime-config";
 
 const DOWNLOAD_TTL_SECONDS = 15 * 60;
 const filestoreLogger = getLogger({ component: "filestore", driver: "local" });
 
 function getLocalSigningSecret() {
-  const secret = process.env.LOCAL_FILESTORE_SIGNING_SECRET?.trim()
-    ?? process.env.SESSION_SECRET?.trim();
+  const secret = resolveLocalFilestoreSigningSecret();
 
   if (!secret) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error(
-        "LOCAL_FILESTORE_SIGNING_SECRET (or SESSION_SECRET) must be set in production.",
-      );
-    }
-    filestoreLogger.warn(
-      "LOCAL_FILESTORE_SIGNING_SECRET not set; using insecure default secret in non-production mode",
+    throw new Error(
+      "LOCAL_FILESTORE_SIGNING_SECRET (or SESSION_SECRET) must be set when STORAGE_DRIVER=local.",
     );
-    return "convertflow-local-filestore-secret";
   }
 
   return secret;
 }
-
-const LOCAL_SIGNING_SECRET = getLocalSigningSecret();
 
 interface LocalDownloadParams {
   expires: number;
@@ -58,7 +50,7 @@ function getLocalPathForKey(key: string) {
 
 function createSignature(key: string, filename: string, expires: number) {
   return crypto
-    .createHmac("sha256", LOCAL_SIGNING_SECRET)
+    .createHmac("sha256", getLocalSigningSecret())
     .update(`${key}\n${filename}\n${expires}`)
     .digest("hex");
 }

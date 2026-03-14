@@ -9,7 +9,7 @@
     "start": "NODE_ENV=production node dist/index.cjs",
     "worker": "tsx server/worker.ts",
     "check": "tsc",
-    "test": "tsx --test tests/*.test.ts tests/**/*.test.ts",
+    "test": "NODE_ENV=test ALLOW_MEMORY_STORAGE=true LOCAL_FILESTORE_SIGNING_SECRET=test-local-signing-secret tsx --test tests/*.test.ts tests/**/*.test.ts tests/*.test.tsx tests/**/*.test.tsx",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
