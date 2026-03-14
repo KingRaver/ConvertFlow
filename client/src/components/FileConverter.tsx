@@ -1,5 +1,4 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import LaserFlow from "@/components/LaserFlow";
 import {
   Upload,
   FileText,
@@ -337,27 +336,6 @@ export default function FileConverter({ presetFrom, presetTo }: FileConverterPro
           data-testid="input-file"
         />
 
-        {!hasFiles && (
-          <div className="absolute -top-[400px] left-1/2 -translate-x-1/2 w-screen h-[400px] pointer-events-none">
-            <LaserFlow
-              color="#0d9488"
-              horizontalBeamOffset={0.1}
-              verticalBeamOffset={-0.5}
-              verticalSizing={150.0}
-              horizontalSizing={9.1}
-              wispDensity={11.11}
-              wispSpeed={3}
-              wispIntensity={2.0}
-              flowSpeed={0.5}
-              flowStrength={0.66}
-              fogIntensity={22.22}
-              fogScale={44.44}
-              fogFallSpeed={1.21}
-              decay={0.1}
-              falloffStart={0.34}
-            />
-          </div>
-        )}
 
         {!hasFiles ? (
           <div className="flex flex-col items-center justify-center py-16 px-6">
