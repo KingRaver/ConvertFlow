@@ -70,10 +70,7 @@ export default function Home() {
         <div className="absolute inset-0 bg-gradient-to-b from-background/60 to-background pointer-events-none" />
         <div className="mx-auto max-w-6xl px-4 sm:px-6 pt-16 pb-12 sm:pt-24 sm:pb-16">
           <div className="text-center mb-10">
-            <Badge variant="secondary" className="mb-4 text-xs font-normal px-3 py-1">
-              Real conversions &middot; Guest or account
-            </Badge>
-            <h1 className="text-xl sm:text-2xl font-bold tracking-tight mb-3" data-testid="text-hero-title">
+<h1 className="text-xl sm:text-2xl font-bold tracking-tight mb-3" data-testid="text-hero-title">
               Convert Files Across Formats
             </h1>
             <p className="text-sm sm:text-base text-muted-foreground max-w-2xl mx-auto leading-relaxed">
