@@ -61,7 +61,7 @@ interface PollOptions {
 export async function pollConversionUntilSettled({
   id,
   checkStatus,
-  maxAttempts = 30,
+  maxAttempts = 300,
   intervalMs = 1000,
   signal,
   onProgress,
