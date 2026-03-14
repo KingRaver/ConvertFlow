@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import ffmpegStatic from "ffmpeg-static";
 import { ConversionError, ConversionTimeoutError, MissingToolError } from "./index";
 
-export const CONVERTER_TIMEOUT_MS = 60_000;
+export const CONVERTER_TIMEOUT_MS = 5 * 60 * 1_000;
 
 interface CommandOptions {
   cwd?: string;
