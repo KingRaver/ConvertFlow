@@ -120,7 +120,7 @@ export default function Home() {
             {FEATURES.map((feature) => (
               <div
                 key={feature.title}
-                className="p-5 rounded-xl bg-background border border-border/60"
+                className="flex flex-col items-center p-5 rounded-xl bg-background border border-border/60 text-center"
                 data-testid={`feature-${feature.title.toLowerCase().replace(/\s/g, "-")}`}
               >
                 <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center mb-3">
