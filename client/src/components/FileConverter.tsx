@@ -337,27 +337,30 @@ export default function FileConverter({ presetFrom, presetTo }: FileConverterPro
           data-testid="input-file"
         />
 
+        {!hasFiles && (
+          <div className="absolute -top-[180px] inset-x-0 h-[180px] pointer-events-none">
+            <LaserFlow
+              color="#0d9488"
+              horizontalBeamOffset={0.0}
+              verticalBeamOffset={0.0}
+              verticalSizing={2}
+              horizontalSizing={2}
+              wispDensity={5}
+              wispSpeed={15}
+              wispIntensity={5}
+              flowSpeed={0.5}
+              flowStrength={0.33}
+              fogIntensity={0.45}
+              fogScale={0.41}
+              fogFallSpeed={0.12}
+              decay={1.33}
+              falloffStart={0.69}
+            />
+          </div>
+        )}
+
         {!hasFiles ? (
-          <div className="flex flex-col items-center justify-center py-16 px-6 relative">
-            <div className="absolute inset-0 rounded-xl overflow-hidden pointer-events-none">
-              <LaserFlow
-                color="#0d9488"
-                horizontalBeamOffset={0.1}
-                verticalBeamOffset={0.0}
-                verticalSizing={2}
-                horizontalSizing={2}
-                wispDensity={5}
-                wispSpeed={15}
-                wispIntensity={5}
-                flowSpeed={0.5}
-                flowStrength={0.33}
-                fogIntensity={0.45}
-                fogScale={0.41}
-                fogFallSpeed={0.12}
-                decay={1.33}
-                falloffStart={0.69}
-              />
-            </div>
+          <div className="flex flex-col items-center justify-center py-16 px-6">
             <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
               <Upload className="w-6 h-6 text-primary" />
             </div>
