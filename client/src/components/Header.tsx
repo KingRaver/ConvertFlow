@@ -15,7 +15,7 @@ export default function Header() {
       className="sticky top-0 z-50 w-full border-b border-border/60 bg-background/80 backdrop-blur-xl"
       data-testid="header"
     >
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
+      <div className="mx-auto flex h-14 max-w-6xl items-center px-4 sm:px-6 relative">
         <Link href="/" className="group flex items-center gap-2" data-testid="link-home">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <ArrowLeftRight className="h-4 w-4" />
@@ -23,7 +23,7 @@ export default function Header() {
           <span className="text-base font-semibold tracking-tight">ConvertFlow</span>
         </Link>
 
-        <nav className="hidden items-center gap-1 sm:flex" data-testid="nav-main">
+        <nav className="absolute left-1/2 -translate-x-1/2 hidden items-center gap-1 sm:flex" data-testid="nav-main">
           <Link href="/">
             <Button
               variant={location === "/" ? "secondary" : "ghost"}
@@ -68,7 +68,7 @@ export default function Header() {
           )}
         </nav>
 
-        <div className="flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-2">
           {isAuthenticated ? (
             <>
               <div className="hidden items-center gap-2 md:flex">
