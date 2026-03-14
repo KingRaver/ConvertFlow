@@ -263,7 +263,7 @@ export const LaserFlow: React.FC<Props> = ({
   dpr,
   mouseSmoothTime = 0.0,
   mouseTiltStrength = 0.01,
-  horizontalBeamOffset = 0.1,
+  horizontalBeamOffset = 0.2,
   verticalBeamOffset = 0.0,
   flowSpeed = 0.35,
   verticalSizing = 777.7,
