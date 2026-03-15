@@ -70,12 +70,11 @@ export default function Home() {
         <div className="absolute inset-0 bg-gradient-to-b from-background/60 to-background pointer-events-none" />
         <div className="mx-auto max-w-6xl px-4 sm:px-6 pt-16 pb-12 sm:pt-24 sm:pb-16">
           <div className="text-center mb-10">
-<h1 className="text-xl sm:text-2xl font-bold tracking-tight mb-3" data-testid="text-hero-title">
-              Convert Files Across Formats
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight mb-3" data-testid="text-hero-title">
+              Convert Files Instantly
             </h1>
             <p className="text-sm sm:text-base text-muted-foreground max-w-2xl mx-auto leading-relaxed">
-              Upload a file, let the backend run the matching converter, and download the finished
-              output with either guest tracking or account history.
+              Fast, secure, and free file conversions. Drop your files and get results in seconds.
             </p>
           </div>
 
