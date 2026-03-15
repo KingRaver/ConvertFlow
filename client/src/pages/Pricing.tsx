@@ -51,7 +51,7 @@ const CARDS: PricingCard[] = [
   },
   {
     cta: "Upgrade to Business",
-    description: "High-volume access with the largest upload ceiling.",
+    description: "High-volume access with the largest uploads.",
     icon: Shield,
     limits: [
       "Unlimited completed conversions",
