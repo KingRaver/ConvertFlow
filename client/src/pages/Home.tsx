@@ -147,67 +147,59 @@ export default function Home() {
         </div>
         <div className="absolute inset-0 bg-gradient-to-b from-background to-background/60 pointer-events-none" />
         <div className="relative mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16">
-        <h2 className="text-lg font-semibold text-center mb-2">Available Format Coverage</h2>
-        <p className="text-sm text-muted-foreground text-center mb-8">
-          These categories back the current route map and conversion engine registry.
-        </p>
-        <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          {Object.entries(FORMAT_CATEGORIES).map(([key, category]) => (
-            <div
-              key={key}
-              className="flex flex-col items-center p-4 rounded-xl border border-border/60 bg-card text-center"
-            >
-              <div className="flex items-center justify-center gap-2 mb-3">
-                <div className="w-7 h-7 rounded-md bg-primary/10 flex items-center justify-center text-primary">
-                  {CATEGORY_ICONS[category.icon]}
-                </div>
-                <span className="text-sm font-medium">{category.label}</span>
-              </div>
-              <div className="flex flex-wrap justify-center gap-1">
-                {category.formats.map((format) => (
-                  <Badge key={format} variant="secondary" className="text-[10px] font-mono">
-                    .{format}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-        </div>
-      </section>
-
-      <section className="relative overflow-hidden pb-16" data-testid="section-cta">
-        <div className="absolute inset-0 pointer-events-none">
-          <DarkVeil hueShift={48} noiseIntensity={0} scanlineIntensity={0} speed={0.5} scanlineFrequency={0.5} warpAmount={0} />
-        </div>
-        <div className="absolute inset-0 bg-gradient-to-b from-background/60 to-background pointer-events-none" />
-        <div className="relative mx-auto max-w-6xl px-4 sm:px-6 pt-16">
-        <div className="rounded-2xl bg-primary/[0.04] border border-primary/10 p-8 sm:p-12 text-center">
-          <h2 className="text-lg font-semibold mb-2">Ready to review the routes?</h2>
-          <p className="text-sm text-muted-foreground mb-6 max-w-xl mx-auto">
-            Upload a file to start a conversion, or inspect the full list of supported format routes.
+          <h2 className="text-lg font-semibold text-center mb-2">Available Format Coverage</h2>
+          <p className="text-sm text-muted-foreground text-center mb-8">
+            These categories back the current route map and conversion engine registry.
           </p>
-          <div className="flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
-            <Button
-              className="w-full sm:w-auto"
-              onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-              data-testid="button-cta-upload"
-            >
-              Start Converting
-              <ArrowRight className="w-4 h-4 ml-1.5" />
-            </Button>
-            <Button
-              asChild
-              className="w-full sm:w-auto"
-              variant="outline"
-              data-testid="button-cta-formats"
-            >
-              <Link href="/formats">
-                Browse Formats
-              </Link>
-            </Button>
+          <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            {Object.entries(FORMAT_CATEGORIES).map(([key, category]) => (
+              <div
+                key={key}
+                className="flex flex-col items-center p-4 rounded-xl border border-border/60 bg-card text-center"
+              >
+                <div className="flex items-center justify-center gap-2 mb-3">
+                  <div className="w-7 h-7 rounded-md bg-primary/10 flex items-center justify-center text-primary">
+                    {CATEGORY_ICONS[category.icon]}
+                  </div>
+                  <span className="text-sm font-medium">{category.label}</span>
+                </div>
+                <div className="flex flex-wrap justify-center gap-1">
+                  {category.formats.map((format) => (
+                    <Badge key={format} variant="secondary" className="text-[10px] font-mono">
+                      .{format}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
-        </div>
+
+          <div className="rounded-2xl bg-primary/[0.04] border border-primary/10 p-8 sm:p-12 text-center mt-12" data-testid="section-cta">
+            <h2 className="text-lg font-semibold mb-2">Ready to review the routes?</h2>
+            <p className="text-sm text-muted-foreground mb-6 max-w-xl mx-auto">
+              Upload a file to start a conversion, or inspect the full list of supported format routes.
+            </p>
+            <div className="flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
+              <Button
+                className="w-full sm:w-auto"
+                onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+                data-testid="button-cta-upload"
+              >
+                Start Converting
+                <ArrowRight className="w-4 h-4 ml-1.5" />
+              </Button>
+              <Button
+                asChild
+                className="w-full sm:w-auto"
+                variant="outline"
+                data-testid="button-cta-formats"
+              >
+                <Link href="/formats">
+                  Browse Formats
+                </Link>
+              </Button>
+            </div>
+          </div>
         </div>
       </section>
     </div>
