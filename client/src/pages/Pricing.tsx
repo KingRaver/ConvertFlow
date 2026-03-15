@@ -140,9 +140,6 @@ export function PricingContent({
       <div className="absolute inset-0 bg-gradient-to-b from-background/60 to-background pointer-events-none" />
       <div className="relative mx-auto max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
       <div className="mx-auto mb-12 max-w-3xl text-center">
-        <Badge variant="secondary" className="mb-4">
-          {availabilityCopy.badge}
-        </Badge>
         <h1 className="mb-3 text-2xl font-bold tracking-tight sm:text-3xl">Plans and billing</h1>
         <p className="text-sm text-muted-foreground sm:text-base">
           {availabilityCopy.description}
@@ -320,7 +317,7 @@ export function PricingContent({
         })}
       </div>
 
-      <div className="mx-auto mt-10 max-w-3xl rounded-xl border border-border/60 bg-card px-4 py-4 text-sm text-muted-foreground">
+      <div className="mx-auto mt-10 max-w-3xl rounded-xl border border-border/60 bg-card px-4 py-4 text-center text-sm text-muted-foreground">
         Daily usage resets at 00:00 UTC. Successful account-owned conversions are metered for plan quotas.
       </div>
     </div>
