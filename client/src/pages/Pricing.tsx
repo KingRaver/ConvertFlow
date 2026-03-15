@@ -73,7 +73,7 @@ function getAvailabilityCopy(state: BillingCapabilityState) {
     case "configured":
       return {
         badge: "Billing and limits live",
-        description: "ConvertFlow enforces plan-specific quotas, file size limits, retention windows, and Stripe-backed upgrades.",
+        description: "ConvertFlow enforces plan-specific quotas, file size limits, and retention windows.",
         notice: null,
       };
     case "unconfigured":
@@ -321,7 +321,7 @@ export function PricingContent({
       </div>
 
       <div className="mx-auto mt-10 max-w-3xl rounded-xl border border-border/60 bg-card px-4 py-4 text-sm text-muted-foreground">
-        Daily usage resets at 00:00 UTC. Successful account-owned conversions are metered for plan quotas, while guest uploads stay on the free tier.
+        Daily usage resets at 00:00 UTC. Successful account-owned conversions are metered for plan quotas.
       </div>
     </div>
     </div>
