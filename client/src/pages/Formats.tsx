@@ -30,11 +30,11 @@ export default function Formats() {
       <div className="space-y-8">
         {Object.entries(FORMAT_CATEGORIES).map(([key, cat]) => (
           <div key={key} data-testid={`format-category-${key}`}>
-            <div className="flex items-center gap-2.5 mb-4">
+            <div className="flex flex-col items-center gap-2 mb-4">
               <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
                 {CATEGORY_ICONS[cat.icon]}
               </div>
-              <div>
+              <div className="text-center">
                 <h2 className="text-base font-semibold">{cat.label}</h2>
                 <p className="text-xs text-muted-foreground">{cat.formats.length} formats</p>
               </div>
@@ -46,14 +46,14 @@ export default function Formats() {
                 if (targets.length === 0) return null;
 
                 return (
-                  <div key={fmt} className="p-3 rounded-lg border border-border/60 bg-card">
+                  <div key={fmt} className="p-3 rounded-lg border border-border/60 bg-card flex flex-col items-center">
                     <div className="flex items-center gap-2 mb-2">
                       <Badge variant="outline" className="text-xs font-mono">
                         .{fmt.toUpperCase()}
                       </Badge>
                       <ArrowRight className="w-3 h-3 text-muted-foreground" />
                     </div>
-                    <div className="flex flex-wrap gap-1">
+                    <div className="flex flex-wrap gap-1 justify-center">
                       {targets.map((t) => {
                         const slug = `${fmt}-to-${t}`;
                         return (
