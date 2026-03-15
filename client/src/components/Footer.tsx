@@ -6,7 +6,7 @@ export default function Footer() {
   return (
     <footer className="border-t border-border/60 bg-card/50 mt-auto" data-testid="footer">
       <div className="w-full px-3 py-12 sm:px-4">
-        <div className="grid grid-cols-2 justify-items-center gap-8 text-center sm:grid-cols-3">
+        <div className="grid grid-cols-2 justify-items-center gap-x-2 gap-y-8 text-center sm:grid-cols-3">
           <div className="text-center">
             <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Popular</h4>
             <ul className="space-y-1.5">
