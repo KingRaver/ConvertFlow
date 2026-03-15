@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Check, CreditCard, Lock, Rocket, Shield } from "lucide-react";
 import { Link } from "wouter";
+import DarkVeil from "@/components/DarkVeil";
 import type { UserPlan } from "@shared/schema";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -132,7 +133,12 @@ export function PricingContent({
   const disabledBillingLabel = getDisabledBillingLabel(billingCapabilityState);
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6 sm:py-16" data-testid="page-pricing">
+    <div className="relative overflow-hidden" data-testid="page-pricing">
+      <div className="absolute inset-0 pointer-events-none">
+        <DarkVeil hueShift={48} noiseIntensity={0} scanlineIntensity={0} speed={0.5} scanlineFrequency={0.5} warpAmount={0} />
+      </div>
+      <div className="absolute inset-0 bg-gradient-to-b from-background/60 to-background pointer-events-none" />
+    <div className="relative mx-auto max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
       <div className="mx-auto mb-12 max-w-3xl text-center">
         <Badge variant="secondary" className="mb-4">
           {availabilityCopy.badge}
@@ -317,6 +323,7 @@ export function PricingContent({
       <div className="mx-auto mt-10 max-w-3xl rounded-xl border border-border/60 bg-card px-4 py-4 text-sm text-muted-foreground">
         Daily usage resets at 00:00 UTC. Successful account-owned conversions are metered for plan quotas, while guest uploads stay on the free tier.
       </div>
+    </div>
     </div>
   );
 }

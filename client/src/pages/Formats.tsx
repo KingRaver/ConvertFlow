@@ -2,6 +2,7 @@ import { Link } from "wouter";
 import { ArrowRight, FileText, Image, Music, Video, Table } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { SUPPORTED_CONVERSIONS, FORMAT_CATEGORIES } from "@shared/schema";
+import DarkVeil from "@/components/DarkVeil";
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   FileText: <FileText className="w-5 h-5" />,
@@ -13,7 +14,12 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
 
 export default function Formats() {
   return (
-    <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16" data-testid="page-formats">
+    <div className="relative overflow-hidden" data-testid="page-formats">
+      <div className="absolute inset-0 pointer-events-none">
+        <DarkVeil hueShift={48} noiseIntensity={0} scanlineIntensity={0} speed={0.5} scanlineFrequency={0.5} warpAmount={0} />
+      </div>
+      <div className="absolute inset-0 bg-gradient-to-b from-background/60 to-background pointer-events-none" />
+    <div className="relative mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16">
       <div className="text-center mb-10">
         <h1 className="text-xl font-bold tracking-tight mb-2">Supported Format Routes</h1>
         <p className="text-sm text-muted-foreground max-w-lg mx-auto">
@@ -69,6 +75,7 @@ export default function Formats() {
           </div>
         ))}
       </div>
+    </div>
     </div>
   );
 }

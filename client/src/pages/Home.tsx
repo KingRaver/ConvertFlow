@@ -135,7 +135,12 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16" data-testid="section-categories">
+      <section className="relative overflow-hidden" data-testid="section-categories">
+        <div className="absolute inset-0 pointer-events-none">
+          <DarkVeil hueShift={48} noiseIntensity={0} scanlineIntensity={0} speed={0.5} scanlineFrequency={0.5} warpAmount={0} />
+        </div>
+        <div className="absolute inset-0 bg-gradient-to-b from-background to-background/60 pointer-events-none" />
+        <div className="relative mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16">
         <h2 className="text-lg font-semibold text-center mb-2">Available Format Coverage</h2>
         <p className="text-sm text-muted-foreground text-center mb-8">
           These categories back the current route map and conversion engine registry.
@@ -161,6 +166,7 @@ export default function Home() {
               </div>
             </div>
           ))}
+        </div>
         </div>
       </section>
 
