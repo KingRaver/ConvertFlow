@@ -428,8 +428,7 @@ export default function FileConverter({ presetFrom, presetTo }: FileConverterPro
       )}
 
       <p className="mt-3 text-xs text-muted-foreground text-center">
-        Uploads can stay guest-scoped or account-scoped, source files are deleted after processing,
-        and completed jobs expire automatically.
+        Uploads stay account-scoped, source files are deleted after processing, and completed jobs expire automatically.
       </p>
     </div>
   );
