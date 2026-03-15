@@ -80,39 +80,33 @@ export default function Home() {
 
           <FileConverter />
         </div>
-      </section>
 
-      <section className="relative overflow-hidden" data-testid="section-popular">
-        <div className="absolute inset-0 pointer-events-none">
-          <DarkVeil hueShift={48} noiseIntensity={0} scanlineIntensity={0} speed={0.5} scanlineFrequency={0.5} warpAmount={0} />
-        </div>
-        <div className="absolute inset-0 bg-gradient-to-b from-background to-background/60 pointer-events-none" />
-        <div className="relative mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16">
-        <h2 className="text-lg font-semibold text-center mb-2">Popular Conversion Routes</h2>
-        <p className="text-sm text-muted-foreground text-center mb-8">
-          Jump into the most common source-to-target paths and start a conversion immediately.
-        </p>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-          {POPULAR_CONVERSIONS.map((conversion) => (
-            <Link key={conversion.slug} href={`/convert/${conversion.slug}`}>
-              <div
-                className="flex items-center gap-2.5 p-3 rounded-lg border border-border/60 bg-card hover:bg-accent/50 transition-colors cursor-pointer group"
-                data-testid={`link-conversion-${conversion.slug}`}
-              >
-                <Badge variant="outline" className="text-[10px] font-mono shrink-0">
-                  .{conversion.from}
-                </Badge>
-                <ArrowRight className="w-3 h-3 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
-                <Badge variant="outline" className="text-[10px] font-mono shrink-0">
-                  .{conversion.to}
-                </Badge>
-                <span className="text-xs text-muted-foreground ml-auto hidden sm:block">
-                  {conversion.label}
-                </span>
-              </div>
-            </Link>
-          ))}
-        </div>
+        <div className="relative mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16" data-testid="section-popular">
+          <h2 className="text-lg font-semibold text-center mb-2">Popular Conversion Routes</h2>
+          <p className="text-sm text-muted-foreground text-center mb-8">
+            Jump into the most common source-to-target paths and start a conversion immediately.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+            {POPULAR_CONVERSIONS.map((conversion) => (
+              <Link key={conversion.slug} href={`/convert/${conversion.slug}`}>
+                <div
+                  className="flex items-center gap-2.5 p-3 rounded-lg border border-border/60 bg-card hover:bg-accent/50 transition-colors cursor-pointer group"
+                  data-testid={`link-conversion-${conversion.slug}`}
+                >
+                  <Badge variant="outline" className="text-[10px] font-mono shrink-0">
+                    .{conversion.from}
+                  </Badge>
+                  <ArrowRight className="w-3 h-3 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
+                  <Badge variant="outline" className="text-[10px] font-mono shrink-0">
+                    .{conversion.to}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground ml-auto hidden sm:block">
+                    {conversion.label}
+                  </span>
+                </div>
+              </Link>
+            ))}
+          </div>
         </div>
       </section>
 
