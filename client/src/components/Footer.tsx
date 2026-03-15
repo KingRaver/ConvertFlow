@@ -5,7 +5,7 @@ import { POPULAR_CONVERSIONS } from "@shared/schema";
 export default function Footer() {
   return (
     <footer className="border-t border-border/60 bg-card/50 mt-auto" data-testid="footer">
-      <div className="mx-auto max-w-6xl px-4 sm:px-6 py-12">
+      <div className="w-full py-12">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-8">
           <div className="col-span-2 sm:col-span-1">
             <div className="flex items-center gap-2 mb-3">

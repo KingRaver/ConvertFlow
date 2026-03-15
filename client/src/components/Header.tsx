@@ -15,7 +15,7 @@ export default function Header() {
       className="sticky top-0 z-50 w-full border-b border-border/60 bg-background/80 backdrop-blur-xl"
       data-testid="header"
     >
-      <div className="mx-auto flex h-14 max-w-6xl items-center px-4 sm:px-6 relative">
+      <div className="relative flex h-14 w-full items-center">
         <Link href="/" className="group flex items-center gap-2" data-testid="link-home">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <ArrowLeftRight className="h-4 w-4" />
