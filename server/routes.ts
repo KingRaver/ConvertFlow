@@ -203,6 +203,15 @@ function getFirstValue(value: string | string[] | undefined): string | undefined
   return Array.isArray(value) ? value[0] : value;
 }
 
+function getFirstForwardedHeaderValue(value: string | string[] | undefined): string | undefined {
+  const candidate = getFirstValue(value);
+  if (!candidate) {
+    return undefined;
+  }
+
+  return candidate.split(",")[0]?.trim() || undefined;
+}
+
 function getValidationMessage(error: z.ZodError) {
   return error.issues[0]?.message ?? "Invalid request.";
 }
@@ -473,8 +482,8 @@ async function parseUploadedFiles(
 }
 
 function getRequestBaseUrl(req: Request) {
-  const protocol = getFirstValue(req.header("x-forwarded-proto")) ?? req.protocol;
-  const host = getFirstValue(req.header("x-forwarded-host")) ?? req.header("host");
+  const protocol = getFirstForwardedHeaderValue(req.header("x-forwarded-proto")) ?? req.protocol;
+  const host = getFirstForwardedHeaderValue(req.header("x-forwarded-host")) ?? req.header("host");
 
   if (!host) {
     throw new HttpError(400, "Unable to determine the request host.");

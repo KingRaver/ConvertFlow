@@ -186,3 +186,52 @@ test("billing routes and health expose checkout capability when Stripe is config
   assert.equal(checkoutResponse.status, 200);
   assert.equal(checkoutJson.url, "https://billing.example.test/checkout/pro");
 });
+
+test("billing checkout uses the first forwarded host and protocol values when proxies append multiple entries", async (t) => {
+  let capturedBaseUrl: string | null = null;
+
+  setBillingProviderForTests({
+    async createCheckoutSession({ baseUrl, plan }: { baseUrl: string; plan: "business" | "pro" }) {
+      capturedBaseUrl = baseUrl;
+      return {
+        customerId: "cus_test_123",
+        url: `https://billing.example.test/checkout/${plan}`,
+      };
+    },
+    async createPortalSession() {
+      return {
+        url: "https://billing.example.test/portal",
+      };
+    },
+    isConfigured() {
+      return true;
+    },
+    constructWebhookEvent(_payload, _signature) {
+      throw new Error("Webhook parsing is not exercised in this test.");
+    },
+  });
+  t.after(() => {
+    setBillingProviderForTests(null);
+  });
+
+  const server = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  const account = await registerUser(server.baseUrl);
+
+  const checkoutResponse = await fetch(`${server.baseUrl}/api/billing/checkout`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${account.token}`,
+      "Content-Type": "application/json",
+      "x-forwarded-host": "convertflow.example.com, internal.proxy.local",
+      "x-forwarded-proto": "https, http",
+    },
+    body: JSON.stringify({ plan: "pro" }),
+  });
+
+  assert.equal(checkoutResponse.status, 200);
+  assert.equal(capturedBaseUrl, "https://convertflow.example.com");
+});
