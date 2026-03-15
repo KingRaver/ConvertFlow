@@ -348,7 +348,7 @@ export default function FileConverter({ presetFrom, presetTo }: FileConverterPro
             <p className="text-sm text-muted-foreground mb-4 text-center">
               {isPresetRoute
                 ? `This route only accepts .${presetFrom} files and converts them to .${presetTo}.`
-                : "Convert documents, images, audio, video, and data files with guest or account-backed job tracking."}
+                : "Convert documents, images, audio, video, and data files with account-backed job tracking."}
             </p>
             <div className="flex flex-wrap gap-1.5 justify-center">
               {(isPresetRoute
