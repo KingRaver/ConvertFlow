@@ -6,19 +6,7 @@ export default function Footer() {
   return (
     <footer className="border-t border-border/60 bg-card/50 mt-auto" data-testid="footer">
       <div className="w-full px-3 py-12 sm:px-4">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-8">
-          <div className="col-span-2 sm:col-span-1">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-primary text-primary-foreground">
-                <ArrowLeftRight className="w-3.5 h-3.5" />
-              </div>
-              <span className="text-sm font-semibold">ConvertFlow</span>
-            </div>
-            <p className="text-xs text-muted-foreground leading-relaxed max-w-[200px]">
-              Guest or account-backed file conversions with plan-based quotas, upload limits, and retention windows.
-            </p>
-          </div>
-
+        <div className="grid grid-cols-2 gap-8 sm:grid-cols-3">
           <div>
             <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Popular</h4>
             <ul className="space-y-1.5">
@@ -55,8 +43,14 @@ export default function Footer() {
           </div>
         </div>
 
-        <div className="mt-8 pt-6 border-t border-border/60 flex justify-center">
-          <p className="text-xs text-muted-foreground text-center">
+        <div className="mt-8 flex flex-col gap-3 border-t border-border/60 pt-6 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+              <ArrowLeftRight className="w-3.5 h-3.5" />
+            </div>
+            <span className="text-sm font-semibold">ConvertFlow</span>
+          </div>
+          <p className="text-xs text-muted-foreground sm:text-right">
             &copy; {new Date().getFullYear()} ConvertFlow. All rights reserved.
           </p>
         </div>
