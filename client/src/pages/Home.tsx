@@ -68,7 +68,7 @@ export default function Home() {
           <DarkVeil hueShift={48} noiseIntensity={0} scanlineIntensity={0} speed={0.5} scanlineFrequency={0.5} warpAmount={0} />
         </div>
         <div className="absolute inset-0 bg-gradient-to-b from-background/60 to-background pointer-events-none" />
-        <div className="mx-auto max-w-6xl px-4 sm:px-6 pt-16 pb-12 sm:pt-24 sm:pb-16">
+        <div className="relative mx-auto max-w-6xl px-4 sm:px-6 pt-16 pb-12 sm:pt-24 sm:pb-16">
           <div className="text-center mb-10">
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight mb-3" data-testid="text-hero-title">
               Convert Files Instantly

@@ -19,7 +19,7 @@ export default function Formats() {
         <DarkVeil hueShift={48} noiseIntensity={0} scanlineIntensity={0} speed={0.5} scanlineFrequency={0.5} warpAmount={0} />
       </div>
       <div className="absolute inset-0 bg-gradient-to-b from-background/60 to-background pointer-events-none" />
-    <div className="relative mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16">
+      <div className="relative mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16">
       <div className="text-center mb-10">
         <h1 className="text-xl font-bold tracking-tight mb-2">Supported Format Routes</h1>
         <p className="text-sm text-muted-foreground max-w-lg mx-auto">

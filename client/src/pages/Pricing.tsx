@@ -138,7 +138,7 @@ export function PricingContent({
         <DarkVeil hueShift={48} noiseIntensity={0} scanlineIntensity={0} speed={0.5} scanlineFrequency={0.5} warpAmount={0} />
       </div>
       <div className="absolute inset-0 bg-gradient-to-b from-background/60 to-background pointer-events-none" />
-    <div className="relative mx-auto max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
+      <div className="relative mx-auto max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
       <div className="mx-auto mb-12 max-w-3xl text-center">
         <Badge variant="secondary" className="mb-4">
           {availabilityCopy.badge}
